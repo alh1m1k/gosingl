@@ -1,7 +1,5 @@
 /test/*
 /vendor
-/README.md
-/LICENSE
 /glide.yaml
 /glide.lock
 /gosingl
