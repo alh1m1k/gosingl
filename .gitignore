@@ -1,0 +1,8 @@
+/test/*
+/vendor
+/README.md
+/LICENSE
+/glide.yaml
+/glide.lock
+/gosingl
+/generate_test.go
