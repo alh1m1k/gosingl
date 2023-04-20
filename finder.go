@@ -1,12 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"go/ast"
 	"go/token"
 	"strings"
 
-	"io"
 	"os"
 )
 
@@ -15,6 +15,7 @@ type structFinder struct {
 	filename string
 	s        *ast.TypeSpec
 	m        []ast.Node
+	i        []*ast.ImportSpec
 }
 
 func newStructFinder(name string, filename string) *structFinder {
@@ -24,13 +25,18 @@ func newStructFinder(name string, filename string) *structFinder {
 func (s *structFinder) find(n ast.Node) bool {
 
 	switch lookedFor := n.(type) {
+	case *ast.ImportSpec:
+		s.i = append(s.i, lookedFor)
 	case *ast.TypeSpec:
 		if lookedFor.Name == nil {
 			return true
 		}
 		if strings.Contains(lookedFor.Name.Name, s.name) {
 			if _, ok := lookedFor.Type.(*ast.StructType); ok {
+				//log.Println("find")
 				s.s = lookedFor
+			} else {
+				//log.Println("w type", reflect.ValueOf(lookedFor).String())
 			}
 		}
 	case *ast.FuncDecl:
@@ -62,19 +68,20 @@ func (s *structFinder) methods() []ast.Node {
 	return s.m
 }
 
+func (s *structFinder) imports() []*ast.ImportSpec {
+	return s.i
+}
+
 func generate(
-	set *token.FileSet,
+	ctx context.Context,
+	set *token.FileSet, //to context
+	allFiles []*ast.File, //to context
 	currentFile *ast.File,
-	allFiles []*ast.File,
-	dirname string,
-	pkgName string,
 	fileName string,
-	structToFind string,
-	variableName string,
-	write bool,
-	customWriter io.Writer,
+	dirname string,
+	cfg Config,
 ) error {
-	sf := newStructFinder(structToFind, fileName)
+	sf := newStructFinder(cfg.Structure, fileName)
 	ast.Inspect(currentFile, sf.find)
 
 	// structure not found
@@ -82,26 +89,38 @@ func generate(
 		return errors.New("target structure not found")
 	}
 
-	var writer io.Writer
-	if !write {
-		if customWriter != nil {
-			writer = customWriter
+	var (
+		resetFile *os.File
+		err       error
+	)
+
+	if ctx.Value("writer") == nil {
+		if !cfg.Write {
+			ctx = context.WithValue(ctx, "writer", os.Stdout)
 		} else {
-			writer = os.Stdout
+			resetFilePath := strings.Replace(fileName, ".go", "_singleton.go", 1)
+			// delete if needed
+			_ = os.Remove(resetFilePath)
+			// writeType to a file
+			resetFile, err = os.OpenFile(resetFilePath, os.O_CREATE|os.O_RDWR, 0600)
+			if err != nil {
+				return err
+			}
+			ctx = context.WithValue(ctx, "writer", resetFile)
 		}
-	} else {
-		resetFile := strings.Replace(fileName, ".go", "_singleton.go", 1)
-		// delete if needed
-		_ = os.Remove(resetFile)
-		// writeType to a file
-		w, err := os.OpenFile(resetFile, os.O_CREATE|os.O_RDWR, 0600)
-		if err != nil {
-			return err
-		}
-		defer w.Close()
-		writer = w
 	}
 
-	g := newGenerator(sf.structure(), sf.methods(), allFiles, set, dirname, pkgName, variableName, writer)
-	return g.do()
+	g := newGenerator(sf.imports(), sf.structure(), sf.methods(), allFiles, set, dirname, cfg)
+	if err = g.do(ctx); err != nil {
+		if resetFile != nil {
+			resetFile.Close()
+			_ = os.Remove(resetFile.Name())
+		}
+		return err
+	} else {
+		if resetFile != nil {
+			resetFile.Close()
+		}
+		return nil
+	}
 }
