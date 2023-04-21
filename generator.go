@@ -11,7 +11,6 @@ import (
 	"go/types"
 	"io"
 	"log"
-	"os"
 	"reflect"
 	"strings"
 )
@@ -21,29 +20,26 @@ var ParserWarning = errors.New("WARNING:")
 
 // generator will work on the selected structure of one file
 type generator struct {
-	defs      map[*ast.Ident]types.Object
-	pkg       *types.Package
-	fs        *token.FileSet
-	files     []*ast.File
-	structure *ast.TypeSpec
-	methods   []ast.Node
-	imports   []*ast.ImportSpec
-	path      string
-	cfg       Config
-	inited    bool
-	internal  bool //seted at runtime in do method
-	alice     string
+	defs     map[*ast.Ident]types.Object
+	pkg      *types.Package
+	fs       *token.FileSet
+	files    []*ast.File
+	imports  []*ast.ImportSpec
+	path     string
+	cfg      Config
+	inited   bool
+	internal bool //seted at runtime in do method
+	alice    string
+	output   *jen.File
 }
 
-func newGenerator(imports []*ast.ImportSpec, structure *ast.TypeSpec, methods []ast.Node, files []*ast.File, fs *token.FileSet, path string, cfg Config) *generator {
+func newGenerator(imports []*ast.ImportSpec, files []*ast.File, fs *token.FileSet, path string, cfg Config) *generator {
 	return &generator{
-		imports:   imports,
-		structure: structure,
-		methods:   methods,
-		cfg:       cfg,
-		fs:        fs,
-		path:      path,
-		files:     files,
+		imports: imports,
+		cfg:     cfg,
+		fs:      fs,
+		path:    path,
+		files:   files,
 	}
 }
 
@@ -70,7 +66,7 @@ func (g *generator) init() error {
 	return nil
 }
 
-func (g *generator) do(ctx context.Context) error {
+func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) error {
 
 	if !g.inited {
 		if err := g.init(); err != nil {
@@ -78,15 +74,20 @@ func (g *generator) do(ctx context.Context) error {
 		}
 	}
 
-	if g.structure == nil {
+	if target == nil {
 		return NoStructError
 	}
 
 	var (
-		structure    *ast.StructType
 		ok, declared bool
 	)
-	if structure, ok = g.structure.Type.(*ast.StructType); !ok {
+
+	switch target.Type.(type) {
+	case *ast.StructType:
+		//nope
+	case *ast.InterfaceType:
+		//nope
+	default:
 		return NoStructError
 	}
 
@@ -118,14 +119,18 @@ func (g *generator) do(ctx context.Context) error {
 		}
 	}
 
-	if len(g.methods) == 0 && !declared {
+	if len(targetMethods) == 0 && !declared {
 		//outputBuffer.Comment("first")
-		outputBuffer.Var().Id(g.cfg.Variable).Op("*").Id(g.structure.Name.Name).Line()
+		if _, ok = target.Type.(*ast.InterfaceType); ok {
+			outputBuffer.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
+		} else {
+			outputBuffer.Var().Id(g.cfg.Variable).Op("*").Id(target.Name.Name).Line()
+		}
 		declared = true
 	}
 
-	for i := range g.methods {
-		switch method := g.methods[i].(type) {
+	for i := range targetMethods {
+		switch method := targetMethods[i].(type) {
 		case *ast.FuncDecl:
 			if method.Name.IsExported() {
 				if !declared {
@@ -142,75 +147,118 @@ func (g *generator) do(ctx context.Context) error {
 				outputBuffer.Line()
 			}
 		default:
+			log.Println("ubnormal value in targetMethods", reflect.ValueOf(targetMethods[i]).String())
 		}
 	}
 
-	for _, field := range structure.Fields.List {
-		if fn, ok := field.Type.(*ast.FuncType); ok {
-			if len(field.Names) > 0 && field.Names[0].IsExported() {
-				g.wrapFunction(outputBuffer, field.Names[0].Name, fn.Params, fn.Results, field.Doc.Text())
-				outputBuffer.Line()
-			}
-		} else {
-			if len(field.Names) == 0 { //composition
-				switch mType := field.Type.(type) {
-				case *ast.StarExpr: //mb [T]
-					if str, ok := mType.X.(*ast.SelectorExpr); ok {
-						if err := g.digStruct(ctx, str); errors.Is(err, ParserWarning) {
-							log.Println(err)
-							continue
-						} else {
-							return err
-						}
-					}
-				case *ast.SelectorExpr:
-					if err := g.digStruct(ctx, mType); errors.Is(err, ParserWarning) {
-						log.Println(err)
-						continue
-					} else {
-						return err
-					}
-				default:
-					fmt.Println("anon struct", reflect.ValueOf(mType).String())
+	switch structure := target.Type.(type) {
+	case *ast.StructType:
+		for _, field := range structure.Fields.List {
+			if err := g.digField(ctx, outputBuffer, field, field.Type); err != nil {
+				if errors.Is(err, ParserWarning) {
+					log.Println(err)
+					continue
+				} else {
+					return err
 				}
 			}
-
 		}
+	case *ast.InterfaceType:
+		for _, field := range structure.Methods.List {
+			if err := g.digField(ctx, outputBuffer, field, field.Type); err != nil {
+				if errors.Is(err, ParserWarning) {
+					log.Println(err)
+					continue
+				} else {
+					return err
+				}
+			}
+		}
+	default:
+		panic("must not happened")
 	}
 
-	if g.internal {
-		return nil
-	}
+	g.output = outputBuffer //todo remove
 
-	var writer io.Writer
-	if writer, ok = ctx.Value("writer").(io.Writer); !ok || writer == nil {
-		writer = os.Stdout
-		ctx = context.WithValue(ctx, "writer", writer)
-	}
-
-	return outputBuffer.Render(writer)
+	return nil
 }
 
-func (g *generator) digStruct(ctx context.Context, str *ast.SelectorExpr) error {
+func (g *generator) Write(ctx context.Context, writer io.Writer) error {
+	return g.output.Render(writer)
+}
+
+func (g *generator) digField(ctx context.Context, outputBuffer *jen.File, field *ast.Field, inner ast.Expr) error {
+	switch fieldTyped := inner.(type) {
+	case *ast.FuncType:
+		if len(field.Names) > 0 || field.Names[0].IsExported() {
+			g.wrapFunction(outputBuffer, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
+			outputBuffer.Line()
+		}
+	case *ast.StarExpr:
+		g.digField(ctx, outputBuffer, field, fieldTyped.X) //keep *
+	case *ast.SelectorExpr:
+		if len(field.Names) == 0 {
+			if err := g.digExternalDecl(ctx, fieldTyped); err != nil {
+				return err
+			}
+		}
+	case *ast.Ident:
+		if len(field.Names) == 0 {
+			if fieldTyped.Obj != nil && fieldTyped.Obj.Kind == ast.Typ {
+				if _, ok := fieldTyped.Obj.Decl.(*ast.TypeSpec).Type.(*ast.StructType); ok {
+					err := g.parsePackage(ctx, g.cfg.Package, fieldTyped.Name, fmt.Sprintf("<%s>", field.Type))
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+	default:
+		//
+	}
+	return nil
+}
+
+func (g *generator) digExternalDecl(ctx context.Context, str *ast.SelectorExpr) error {
 	if strIdn, ok := str.X.(*ast.Ident); ok {
 		importSpec := g.localeImport(strIdn.Name)
 		if importSpec == nil {
 			return fmt.Errorf("%w unable to locate import by name", ParserWarning)
 		}
-		config := g.cfg
-		config.Package = importCanon(importSpec.Path.Value)
-		config.Structure = str.Sel.Name
-		config.Comment = fmt.Sprintf("<%s>", str)
-		ctx = context.WithValue(ctx, "_internal", true)
-		ctx = context.WithValue(ctx, "_alice", config.Package)
-		err := parsePackage(ctx, config)
+		err := g.parsePackage(ctx, importCanon(importSpec.Path.Value), str.Sel.Name, fmt.Sprintf("<%s>", str))
 		if err != nil {
 			return err
 		}
+		return nil
 	} else {
 		return fmt.Errorf("%w skip *ast.SelectorExpr(do) unsupported format %v", ParserWarning, str.X)
 	}
-	return fmt.Errorf("%w invalid struct passed %v", ParserWarning, str)
+}
+
+func (g *generator) parsePackage(ctx context.Context, pkg, structure, comment string) error {
+	config := g.cfg
+	config.Package = importCanon(pkg)
+	config.Structure = structure
+	config.Comment = comment
+	ctx = context.WithValue(ctx, "_internal", true)
+	ctx = context.WithValue(ctx, "_alice", config.Package)
+	err := parsePackage(ctx, config)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (g *generator) digInternalDecl(ctx context.Context, structure, comment string) error {
+	ctx = context.WithValue(ctx, "_internal", true)
+	ctx = context.WithValue(ctx, "_alice", g.cfg.Package)
+
+	//sf := newStructFinder(structure, g.path)
+	//ast.Inspect(g., sf.find)
+
+	g.Do(ctx, &ast.TypeSpec{}, []ast.Node{})
+
+	return nil
 }
 
 func (g *generator) wrapFunction(buffer *jen.File, name string, in, out *ast.FieldList, comment string) {
@@ -266,7 +314,6 @@ func (g *generator) buildParams(params *ast.FieldList) []jen.Code {
 		if param == nil { //anon param (probably return value)
 			param = &jen.Statement{}
 		}
-		//log.Println(reflect.ValueOf(field.Type).String())
 		param = g.recursBuildParam(field.Type, param)
 		result = append(result, jen.Code(param))
 		param = nil
@@ -307,11 +354,6 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		} else {
 			log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format", exp.X)
 		}
-		//first parameter is expression, it may lead to problem on {(expression...).doSome} like code. it probably not a problem in case of func decl
-		//g.recursBuildParam(exp.X, root)
-		//root.Op(".")
-		//g.recursBuildParam(exp.Sel, root)
-		//log.Println(reflect.ValueOf(exp).String())
 	case *ast.BadExpr:
 		log.Println("WARNING: bad expression", exp)
 	default:

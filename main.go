@@ -127,7 +127,7 @@ func parsePackage(ctx context.Context, cfg Config) error {
 			if !strings.Contains(filePath, "_singleton.go") {
 				err = generate(ctx, fset, files, packages[packageName].Files[filePath], filePath, path, cfg)
 				if err != nil {
-					log.Println("!ERROR!", err)
+					log.Println("!ERROR!", err) //todo return error
 					continue
 				} else {
 					log.Println("Done!")

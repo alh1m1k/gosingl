@@ -5,6 +5,7 @@ import (
 	"errors"
 	"go/ast"
 	"go/token"
+	"io"
 	"strings"
 
 	"os"
@@ -32,11 +33,11 @@ func (s *structFinder) find(n ast.Node) bool {
 			return true
 		}
 		if strings.Contains(lookedFor.Name.Name, s.name) {
-			if _, ok := lookedFor.Type.(*ast.StructType); ok {
-				//log.Println("find")
+			switch lookedFor.Type.(type) {
+			case *ast.StructType:
 				s.s = lookedFor
-			} else {
-				//log.Println("w type", reflect.ValueOf(lookedFor).String())
+			case *ast.InterfaceType:
+				s.s = lookedFor
 			}
 		}
 	case *ast.FuncDecl:
@@ -91,12 +92,19 @@ func generate(
 
 	var (
 		resetFile *os.File
+		writer    io.Writer
 		err       error
 	)
 
+	g := newGenerator(sf.imports(), allFiles, set, dirname, cfg)
+	if err = g.Do(ctx, sf.structure(), sf.methods()); err != nil {
+		return err
+	}
+
 	if ctx.Value("writer") == nil {
 		if !cfg.Write {
-			ctx = context.WithValue(ctx, "writer", os.Stdout)
+			writer = os.Stdout
+			ctx = context.WithValue(ctx, "writer", writer)
 		} else {
 			resetFilePath := strings.Replace(fileName, ".go", "_singleton.go", 1)
 			// delete if needed
@@ -106,21 +114,16 @@ func generate(
 			if err != nil {
 				return err
 			}
-			ctx = context.WithValue(ctx, "writer", resetFile)
+			writer = resetFile
+			ctx = context.WithValue(ctx, "writer", writer)
 		}
 	}
 
-	g := newGenerator(sf.imports(), sf.structure(), sf.methods(), allFiles, set, dirname, cfg)
-	if err = g.do(ctx); err != nil {
+	if err = g.Write(ctx, writer); err != nil {
 		if resetFile != nil {
-			resetFile.Close()
-			_ = os.Remove(resetFile.Name())
+			os.Remove(resetFile.Name())
 		}
 		return err
-	} else {
-		if resetFile != nil {
-			resetFile.Close()
-		}
-		return nil
 	}
+	return nil
 }
