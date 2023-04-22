@@ -119,7 +119,7 @@ func generate(
 		}
 	}
 
-	if err = g.Write(ctx, writer); err != nil {
+	if err = g.WriteTo(writer); err != nil {
 		if resetFile != nil {
 			os.Remove(resetFile.Name())
 		}

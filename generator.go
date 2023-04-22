@@ -93,13 +93,13 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 
 	var outputBuffer *jen.File
 	if outputBuffer, ok = ctx.Value("outputBuff").(*jen.File); !ok || outputBuffer == nil {
-		outputBuffer = jen.NewFilePathName(g.pkg.Path(), packageName(g.cfg.Package))
+		outputBuffer = jen.NewFilePathName(g.cfg.Package, packageName(g.cfg.Package))
 		ctx = context.WithValue(ctx, "outputBuff", outputBuffer)
 	}
 
 	if g.internal, ok = ctx.Value("_internal").(bool); !ok { //todo cross ref protection
 		g.internal = false
-		g.alice = packageName(g.cfg.Package)
+		g.alice = g.cfg.Package
 	} else {
 		if g.alice, ok = ctx.Value("_alice").(string); !ok { //todo cross ref protection
 			g.alice = ""
@@ -183,8 +183,11 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	return nil
 }
 
-func (g *generator) Write(ctx context.Context, writer io.Writer) error {
-	return g.output.Render(writer)
+func (g *generator) WriteTo(writer io.Writer) error {
+	if g.output != nil {
+		return g.output.Render(writer)
+	}
+	return nil
 }
 
 func (g *generator) digField(ctx context.Context, outputBuffer *jen.File, field *ast.Field, inner ast.Expr) error {
@@ -326,7 +329,7 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 	case *ast.StarExpr:
 		g.recursBuildParam(exp.X, root.Op("*"))
 	case *ast.Ident:
-		if ISScalarType(exp.Name) {
+		if exp.Obj == nil { //it probably scalar //ISScalarType(exp.Name) { //todo check Obj == nil
 			return root.Id(exp.Name)
 		} else if true { //local struct decl
 			return root.Qual(g.alice, exp.Name)
