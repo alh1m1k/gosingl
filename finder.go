@@ -11,6 +11,10 @@ import (
 	"os"
 )
 
+var (
+	NotFoundError = errors.New("target structure not found")
+)
+
 type structFinder struct {
 	name     string
 	filename string
@@ -87,23 +91,26 @@ func generate(
 
 	// structure not found
 	if sf.structure() == nil {
-		return errors.New("target structure not found")
+		return NotFoundError
 	}
 
 	var (
 		resetFile *os.File
 		writer    io.Writer
 		err       error
+		ok        bool
 	)
 
 	g := newGenerator(sf.imports(), allFiles, set, dirname, cfg)
+
 	if err = g.Do(ctx, sf.structure(), sf.methods()); err != nil {
 		return err
 	}
 
-	if ctx.Value("writer") == nil {
+	if writer, ok = ctx.Value("writer").(io.Writer); writer == nil || !ok {
 		if !cfg.Write {
 			writer = os.Stdout
+
 			ctx = context.WithValue(ctx, "writer", writer)
 		} else {
 			resetFilePath := strings.Replace(fileName, ".go", "_singleton.go", 1)
@@ -119,11 +126,12 @@ func generate(
 		}
 	}
 
-	if err = g.WriteTo(writer); err != nil {
-		if resetFile != nil {
-			os.Remove(resetFile.Name())
+	if internal, ok := ctx.Value("_internal").(bool); !ok || !internal { //todo refactor
+		//only first call (root) may call render
+		if err = g.WriteTo(writer); err != nil {
+			return err
 		}
-		return err
 	}
+
 	return nil
 }

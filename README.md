@@ -17,6 +17,8 @@ It seek for exported field function, exported methods and then wrap it with modu
 
 Global singleton variable may be hidden via lower case variable name.
 
+Composition member of field may be excluded from inspect via tag ``` `singl:"ignore"'```
+
 
 With the following structure in the mystructure.go file :
 
@@ -120,7 +122,7 @@ just add the -w flag to write it to queryExecutor_singleton.go.
 
 ## Status
 
-Package in alpha stage. Basic functionality, composition is not (yet) supported.
+Package in alpha stage. Basic functionality.
 Implemented support for function fields. Zero test coverage.
 
 ## Dependencies
@@ -139,5 +141,5 @@ The two main dependencies are :
 - [x] composition
 - [x] interface
 - [ ] generics
-- [ ] tags (ignore)
+- [x] tags (ignore)
 - [ ] test coverage & testing

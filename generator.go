@@ -15,7 +15,6 @@ import (
 	"strings"
 )
 
-var NoStructError = errors.New("no walid structure")
 var ParserWarning = errors.New("WARNING:")
 
 // generator will work on the selected structure of one file
@@ -75,7 +74,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	}
 
 	if target == nil {
-		return NoStructError
+		return NotFoundError
 	}
 
 	var (
@@ -88,7 +87,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	case *ast.InterfaceType:
 		//nope
 	default:
-		return NoStructError
+		return NotFoundError
 	}
 
 	var outputBuffer *jen.File
@@ -154,6 +153,9 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	switch structure := target.Type.(type) {
 	case *ast.StructType:
 		for _, field := range structure.Fields.List {
+			if g.isIgnored(field.Tag) {
+				continue
+			}
 			if err := g.digField(ctx, outputBuffer, field, field.Type); err != nil {
 				if errors.Is(err, ParserWarning) {
 					log.Println(err)
@@ -165,6 +167,9 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		}
 	case *ast.InterfaceType:
 		for _, field := range structure.Methods.List {
+			if g.isIgnored(field.Tag) {
+				continue
+			}
 			if err := g.digField(ctx, outputBuffer, field, field.Type); err != nil {
 				if errors.Is(err, ParserWarning) {
 					log.Println(err)
@@ -243,6 +248,12 @@ func (g *generator) parsePackage(ctx context.Context, pkg, structure, comment st
 	config.Package = importCanon(pkg)
 	config.Structure = structure
 	config.Comment = comment
+	if config.Deep > 0 {
+		config.Deep--
+		if config.Deep == 0 {
+			return fmt.Errorf("%s:%s skipped as too deep inspect", pkg, structure)
+		}
+	}
 	ctx = context.WithValue(ctx, "_internal", true)
 	ctx = context.WithValue(ctx, "_alice", config.Package)
 	err := parsePackage(ctx, config)
@@ -264,25 +275,22 @@ func (g *generator) digInternalDecl(ctx context.Context, structure, comment stri
 	return nil
 }
 
+func (g *generator) isIgnored(tag *ast.BasicLit) bool {
+	if tag == nil {
+		return false
+	}
+	bst := reflect.StructTag(strings.Trim(tag.Value, "`"))
+	if tc := bst.Get("singl"); tc == "ignore" {
+		return true
+	}
+	return false
+}
+
 func (g *generator) wrapFunction(buffer *jen.File, name string, in, out *ast.FieldList, comment string) {
 	if len(comment) > 0 {
 		buffer.Comment(comment)
 	}
-	fnBuilder := buffer.Func()
-	fnBuilder.Id(name)
-	if in.NumFields() > 0 {
-		fnBuilder.Params(g.buildParams(in)...)
-	} else {
-		fnBuilder.Op("()")
-	}
-	outFieldsCnt := out.NumFields()
-	if out != nil && outFieldsCnt > 0 {
-		if outFieldsCnt == 1 {
-			fnBuilder.List(g.buildParams(out)...)
-		} else {
-			fnBuilder.Params(g.buildParams(out)...)
-		}
-	}
+	fnBuilder := g.buildFunction(name, in, out, comment)
 	underFn := jen.Id(g.cfg.Variable).Dot(name).CallFunc(func(group *jen.Group) {
 		for _, field := range in.List {
 			for _, fieldIdent := range field.Names {
@@ -295,12 +303,36 @@ func (g *generator) wrapFunction(buffer *jen.File, name string, in, out *ast.Fie
 		}
 	})
 	fnBuilder.BlockFunc(func(grp *jen.Group) {
-		if out != nil && outFieldsCnt > 0 {
+		if out != nil && out.NumFields() > 0 {
 			grp.Return(underFn)
 		} else {
 			grp.Add(underFn)
 		}
 	})
+	buffer.Add(fnBuilder)
+}
+
+func (g *generator) buildFunction(name string, in, out *ast.FieldList, comment string) *jen.Statement {
+	/*	if len(comment) > 0 {
+		buffer.Comment(comment)
+	}*/
+	fnBuilder := jen.Func()
+	fnBuilder.Id(name)
+	if in.NumFields() > 0 {
+		fnBuilder.Params(g.buildParams(in)...)
+	} else {
+		fnBuilder.Op("()")
+	}
+	outFieldsCnt := out.NumFields()
+	if out != nil && out.NumFields() > 0 {
+		if outFieldsCnt == 1 {
+			fnBuilder.List(g.buildParams(out)...)
+		} else {
+			fnBuilder.Params(g.buildParams(out)...)
+		}
+	}
+
+	return fnBuilder
 }
 
 func (g *generator) buildParams(params *ast.FieldList) []jen.Code {
@@ -357,6 +389,18 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		} else {
 			log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format", exp.X)
 		}
+	case *ast.InterfaceType:
+		root.InterfaceFunc(func(group *jen.Group) {
+			for _, m := range exp.Methods.List {
+				if method, ok := m.Type.(*ast.FuncType); ok {
+					group.Add(g.buildFunction(m.Names[0].Name, method.Params, method.Results, ""))
+				} else {
+					log.Println("WARNING: skip *ast.InterfaceType(recursBuildParam) unsupported format", m)
+				}
+			}
+		})
+	case *ast.MapType:
+		g.recursBuildParam(exp.Value, root.Map(g.recursBuildParam(exp.Key, &jen.Statement{})))
 	case *ast.BadExpr:
 		log.Println("WARNING: bad expression", exp)
 	default:
