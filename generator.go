@@ -24,6 +24,7 @@ type generator struct {
 	fs       *token.FileSet
 	files    []*ast.File
 	imports  []*ast.ImportSpec
+	namer    *namer
 	path     string
 	cfg      Config
 	inited   bool
@@ -39,6 +40,7 @@ func newGenerator(imports []*ast.ImportSpec, files []*ast.File, fs *token.FileSe
 		fs:      fs,
 		path:    path,
 		files:   files,
+		namer:   newNamer(),
 	}
 }
 
@@ -198,7 +200,7 @@ func (g *generator) WriteTo(writer io.Writer) error {
 func (g *generator) digField(ctx context.Context, outputBuffer *jen.File, field *ast.Field, inner ast.Expr) error {
 	switch fieldTyped := inner.(type) {
 	case *ast.FuncType:
-		if len(field.Names) > 0 || field.Names[0].IsExported() {
+		if len(field.Names) > 0 && field.Names[0].IsExported() {
 			g.wrapFunction(outputBuffer, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
 			outputBuffer.Line()
 		}
@@ -290,9 +292,14 @@ func (g *generator) wrapFunction(buffer *jen.File, name string, in, out *ast.Fie
 	if len(comment) > 0 {
 		buffer.Comment(comment)
 	}
-	fnBuilder := g.buildFunction(name, in, out, comment)
+	g.namer.Reset()
+	fnBuilder := jen.Func().Add(g.buildFunctionSignature(name, in, out, true))
 	underFn := jen.Id(g.cfg.Variable).Dot(name).CallFunc(func(group *jen.Group) {
 		for _, field := range in.List {
+			for _, fieldIdent := range g.namer.Values() {
+				group.Add(jen.Id(fieldIdent))
+			}
+			g.namer.Reset()
 			for _, fieldIdent := range field.Names {
 				if _, ok := field.Type.(*ast.Ellipsis); ok {
 					group.Add(jen.Id(fieldIdent.Name).Op("..."))
@@ -312,30 +319,26 @@ func (g *generator) wrapFunction(buffer *jen.File, name string, in, out *ast.Fie
 	buffer.Add(fnBuilder)
 }
 
-func (g *generator) buildFunction(name string, in, out *ast.FieldList, comment string) *jen.Statement {
-	/*	if len(comment) > 0 {
-		buffer.Comment(comment)
-	}*/
-	fnBuilder := jen.Func()
-	fnBuilder.Id(name)
+func (g *generator) buildFunctionSignature(name string, in, out *ast.FieldList, generateNameForAnon bool) *jen.Statement {
+	fnBuilder := jen.Id(name)
 	if in.NumFields() > 0 {
-		fnBuilder.Params(g.buildParams(in)...)
+		fnBuilder.Params(g.buildParams(true && generateNameForAnon, in)...)
 	} else {
 		fnBuilder.Op("()")
 	}
 	outFieldsCnt := out.NumFields()
 	if out != nil && out.NumFields() > 0 {
 		if outFieldsCnt == 1 {
-			fnBuilder.List(g.buildParams(out)...)
+			fnBuilder.List(g.buildParams(false && generateNameForAnon, out)...)
 		} else {
-			fnBuilder.Params(g.buildParams(out)...)
+			fnBuilder.Params(g.buildParams(false && generateNameForAnon, out)...)
 		}
 	}
 
 	return fnBuilder
 }
 
-func (g *generator) buildParams(params *ast.FieldList) []jen.Code {
+func (g *generator) buildParams(generateNameForAnon bool, params *ast.FieldList) []jen.Code {
 	var result []jen.Code
 	for _, field := range params.List {
 		var param *jen.Statement
@@ -348,6 +351,9 @@ func (g *generator) buildParams(params *ast.FieldList) []jen.Code {
 		}
 		if param == nil { //anon param (probably return value)
 			param = &jen.Statement{}
+			if generateNameForAnon {
+				param.Id(g.namer.New(""))
+			}
 		}
 		param = g.recursBuildParam(field.Type, param)
 		result = append(result, jen.Code(param))
@@ -368,7 +374,6 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		} else { //for generics
 			log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format")
 		}
-
 	case *ast.Ellipsis:
 		g.recursBuildParam(exp.Elt, root.Op("..."))
 	case *ast.ArrayType:
@@ -393,14 +398,43 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		root.InterfaceFunc(func(group *jen.Group) {
 			for _, m := range exp.Methods.List {
 				if method, ok := m.Type.(*ast.FuncType); ok {
-					group.Add(g.buildFunction(m.Names[0].Name, method.Params, method.Results, ""))
+					group.Add(g.buildFunctionSignature(m.Names[0].Name, method.Params, method.Results, false))
 				} else {
-					log.Println("WARNING: skip *ast.InterfaceType(recursBuildParam) unsupported format", m)
+					group.Add(g.recursBuildParam(m.Type, &jen.Statement{}))
 				}
 			}
 		})
 	case *ast.MapType:
 		g.recursBuildParam(exp.Value, root.Map(g.recursBuildParam(exp.Key, &jen.Statement{})))
+	case *ast.ChanType:
+		if exp.Dir == ast.SEND|ast.RECV {
+			g.recursBuildParam(exp.Value, root.Chan())
+		} else if exp.Dir&ast.SEND == ast.SEND {
+			g.recursBuildParam(exp.Value, root.Chan().Op("<-"))
+		} else if exp.Dir&ast.RECV == ast.RECV {
+			g.recursBuildParam(exp.Value, root.Op("<-").Chan())
+		} else {
+			log.Println("WARNING: skip *ast.ChanType(recursBuildParam) unsupported format", exp)
+		}
+	case *ast.StructType:
+		root.StructFunc(func(group *jen.Group) {
+			for _, f := range exp.Fields.List {
+				fldState := &jen.Statement{}
+				for _, fName := range f.Names {
+					fldState = fldState.Id(fName.Name).Op(",")
+				}
+				if len(f.Names) > 0 { //mb len(*fldState)
+					fldState = exprUndo(fldState) //skip last ,
+				}
+				statement := g.recursBuildParam(f.Type, fldState)
+				if f.Tag != nil {
+					statement.Tag(tagToMap(f.Tag))
+				}
+				group.Add(statement) //todo add other type of tag
+			}
+		})
+	case *ast.BasicLit:
+		root.Id(exp.Value)
 	case *ast.BadExpr:
 		log.Println("WARNING: bad expression", exp)
 	default:
@@ -433,4 +467,32 @@ func packageName(packagePath string) string {
 		return packagePath
 	}
 	return slice[len(slice)-1]
+}
+
+func exprUndo(exp *jen.Statement) *jen.Statement {
+	proxy := *exp
+	if len(proxy) <= 0 {
+		return nil
+	}
+	proxy = proxy[0 : len(proxy)-1]
+	return &proxy
+}
+
+func tagToMap(lit *ast.BasicLit) map[string]string {
+	if lit == nil {
+		return nil
+	}
+	trimmed := strings.Trim(lit.Value, "`")
+	parts := strings.Split(trimmed, ",")
+	result := make(map[string]string)
+	for _, tags := range parts {
+		tagsPart := strings.Split(strings.TrimSpace(tags), ":")
+		if len(tagsPart) != 2 {
+			log.Println("WARNING: TagToMap tag has unsupported format")
+			continue
+		}
+		//todo other format of tag
+		result[tagsPart[0]] = strings.Trim(tagsPart[1], "\"")
+	}
+	return result
 }
