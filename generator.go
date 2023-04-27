@@ -116,7 +116,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 					}
 					declared = true
 				}
-				if g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, g.cfg) {
+				if g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, isInterfaceFrom(ctx), g.cfg) {
 					g.wrapFunction(ctx, method.Name.Name, method.Type.Params, method.Type.Results, method.Doc.Text())
 					g.output.Line()
 				}
@@ -148,6 +148,8 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 				if g.isIgnored(field.Tag) {
 					continue
 				}
+				ctx = WithInterfaceWalk(ctx) //mark next branch as interface walk
+				// there is no exit from interface walk, as interface may compose only interfaces
 				if err := g.digField(ctx, field, field.Type); err != nil {
 					if errors.Is(err, ParserWarning) {
 						log.Println(err)
@@ -176,7 +178,7 @@ func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Ex
 	switch fieldTyped := inner.(type) {
 	case *ast.FuncType:
 		if len(field.Names) > 0 && field.Names[0].IsExported() {
-			if g.checker.Valid(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, g.cfg) {
+			if g.checker.Valid(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, isInterfaceFrom(ctx), g.cfg) {
 				g.wrapFunction(ctx, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
 				g.output.Line()
 			}
@@ -200,6 +202,8 @@ func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Ex
 				}
 			}
 		}
+	case *ast.InterfaceType:
+		log.Println("must implement interface walk")
 	default:
 		//
 	}
@@ -247,7 +251,15 @@ func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.
 	}
 	namer := g.namerFrom(ctx) //refresh namer for every 1 level function
 	fnBuilder := jen.Add(g.buildFunction(name, in, out, namer))
-	underFn := jen.Id(g.cfg.Variable).Dot(name).CallFunc(func(group *jen.Group) {
+	underFn := jen.Id(g.cfg.Variable)
+	if g.internal /*&& name == packageName(importCanon(g.cfg.Structure))*/ {
+		//special case when inner func look like Instance.Signal() and Signal() is actually composition of Instance.Signal.Signal()
+		//or if Instance.Signal() is ambiguous with not exported composition
+		underFn.Dot(packageName(importCanon(g.cfg.Structure))).Dot(name)
+	} else {
+		underFn.Dot(name)
+	}
+	underFn.CallFunc(func(group *jen.Group) {
 		for _, fieldIdent := range namer.Values() {
 			group.Add(jen.Id(fieldIdent))
 		}
@@ -331,7 +343,7 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 	case *ast.StarExpr:
 		g.recursBuildParam(exp.X, root.Op("*"))
 	case *ast.Ident:
-		if exp.Obj == nil { //it probably scalar //ISScalarType(exp.Name) { //todo check Obj == nil
+		if exp.Obj == nil && ISScalarType(exp.Name) { //it probably scalar // { //check Obj == nil is not enough
 			return root.Id(exp.Name)
 		} else if true { //local struct decl
 			return root.Qual(g.alice, exp.Name)
@@ -488,4 +500,15 @@ func bufferFrom(ctx context.Context, cfg Config) *jen.File {
 	}
 	//log.Println("new buffer")
 	return jen.NewFilePathName(cfg.Package, packageName(cfg.Package)) //must not be happened
+}
+
+func isInterfaceFrom(ctx context.Context) bool {
+	if _markInterfaceWalk, ok := ctx.Value("_markInterfaceWalk").(bool); ok {
+		return _markInterfaceWalk
+	}
+	return false
+}
+
+func WithInterfaceWalk(ctx context.Context) context.Context {
+	return context.WithValue(ctx, "_markInterfaceWalk", true)
 }

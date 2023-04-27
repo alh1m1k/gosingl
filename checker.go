@@ -8,17 +8,19 @@ import (
 )
 
 var SignatureError = errors.New("wrong signature")
+var AmbiguousError = errors.New("ambiguous")
 
 type Checker interface {
-	Valid(name string, in, out *ast.FieldList, cfg Config) bool
+	Valid(name string, in, out *ast.FieldList, isInterface bool, cfg Config) bool
 	Reset()
 	NewChecker() Checker
 	Errors() []error
 }
 
 type uniqueCheckerRecord struct {
-	name    string
-	in, out *ast.FieldList
+	name        string
+	in, out     *ast.FieldList
+	isInterface bool //interface not collide with interface or other rcv
 }
 
 type uniqueChecker struct {
@@ -27,12 +29,12 @@ type uniqueChecker struct {
 	errors map[error]int
 }
 
-func (u *uniqueChecker) Valid(name string, in, out *ast.FieldList, cfg Config) bool {
+func (u *uniqueChecker) Valid(name string, in, out *ast.FieldList, isInterface bool, cfg Config) bool {
 	//todo opt lock
-	for _, candidate := range u.index {
-		if candidate.name == name {
+	for i := range u.index {
+		if u.index[i].name == name {
 			u.Lock()
-			u.analyze(name, in, out, candidate)
+			u.analyze(name, in, out, isInterface, &u.index[i])
 			u.Unlock()
 			return false
 		}
@@ -40,9 +42,10 @@ func (u *uniqueChecker) Valid(name string, in, out *ast.FieldList, cfg Config) b
 	u.Lock()
 	defer u.Unlock()
 	u.index = append(u.index, struct {
-		name    string
-		in, out *ast.FieldList
-	}{name: name, in: in, out: out})
+		name        string
+		in, out     *ast.FieldList
+		isInterface bool
+	}{name: name, in: in, out: out, isInterface: isInterface})
 	return true
 }
 
@@ -65,14 +68,25 @@ func (u *uniqueChecker) NewChecker() Checker {
 	return newUniqueChecker()
 }
 
-func (u *uniqueChecker) analyze(name string, in, out *ast.FieldList, record uniqueCheckerRecord) {
-	if in.NumFields() != record.in.NumFields() || out.NumFields() != record.out.NumFields() {
-		error := fmt.Errorf("func %s has entrys with %w", name, SignatureError)
-		if cnt, ok := u.errors[error]; !ok {
-			u.errors[error] = 1
-		} else {
-			u.errors[error] = cnt + 1
+func (u *uniqueChecker) analyze(name string, in, out *ast.FieldList, isInterface bool, record *uniqueCheckerRecord) {
+	var (
+		err error
+	)
+	if in.NumFields() == record.in.NumFields() || out.NumFields() == record.out.NumFields() {
+		safe := isInterface || record.isInterface
+		record.isInterface = record.isInterface && isInterface //reset if no
+		if safe {
+			return
 		}
+		err = fmt.Errorf("func %s was %w", name, AmbiguousError)
+
+	} else {
+		err = fmt.Errorf("func %s has entrys with %w", name, SignatureError)
+	}
+	if cnt, ok := u.errors[err]; !ok {
+		u.errors[err] = 1
+	} else {
+		u.errors[err] = cnt + 1
 	}
 }
 

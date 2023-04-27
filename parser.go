@@ -55,7 +55,7 @@ var mut sync.Mutex
 
 // this is not realy good aproach to service locator / di
 // because of context behavior and go inteface nil behavior
-// and general non-obviousness of internal checks
+// and general non-obviousness internal checks
 // but we have what we have
 func SetupCtx(
 	ctx context.Context,
@@ -63,6 +63,7 @@ func SetupCtx(
 	buffer *jen.File,
 	namer Namer,
 	checker Checker,
+	blackList []string,
 	params ...any,
 ) context.Context {
 	var (
@@ -95,11 +96,15 @@ func SetupCtx(
 		//log.Println("setup checker")
 		ctx = context.WithValue(ctx, "checker", checker)
 	}
+	if test, ok := ctx.Value("blackList").([]string); !asDefault || (!ok || test == nil) {
+		//log.Println("setup checker")
+		ctx = context.WithValue(ctx, "blackList", blackList)
+	}
 
 	return ctx
 }
 
-// ParsePackage launchs the generation
+// ParsePackage launch the generation
 func ParsePackage(ctx context.Context, cfg Config) error {
 
 	var (
@@ -146,7 +151,8 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 		buffer,
 		newParameterNamer(),
 		checker,
-		true, //as default
+		[]string{"_test.go", "_singleton.go"}, //todo merge
+		true,                                  //it sets as default
 	)
 
 	if err = generate(ctx, loader, cfg); err != nil {
@@ -255,7 +261,7 @@ func recursiveLoaderBuilder(buffer *jen.File, cfg Config) func(ctx context.Conte
 	return recursiveLoader
 }
 
-func collectFiles(pkg string) (path string, files []*ast.File, fileSet *token.FileSet, err error) {
+func collectFiles(pkg string, blacklist []string) (path string, files []*ast.File, fileSet *token.FileSet, err error) {
 	var (
 		packages map[string]*ast.Package
 		p        *build.Package
@@ -277,7 +283,11 @@ func collectFiles(pkg string) (path string, files []*ast.File, fileSet *token.Fi
 
 	for pPath := range packages {
 		for j := range packages[pPath].Files {
-			files = append(files, packages[pPath].Files[j])
+			if !isBlackListed(j, blacklist) {
+				files = append(files, packages[pPath].Files[j])
+			} else {
+				//log.Println(j, "ignored")
+			}
 		}
 	}
 
@@ -310,7 +320,7 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 		var (
 			err error
 		)
-		records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet, err = collectFiles(cfg.Package)
+		records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet, err = collectFiles(cfg.Package, blackListFrom(ctx))
 		if err != nil {
 			return err
 		}
@@ -348,6 +358,8 @@ func initPackage(path string, files []*ast.File, fs *token.FileSet) (*types.Pack
 	initializing package parsing with the go/type
 	*/
 
+	//log.Println("init pack", path)
+
 	defs := make(map[*ast.Ident]types.Object)
 	infos := &types.Info{
 		Defs: defs,
@@ -366,6 +378,18 @@ func initPackage(path string, files []*ast.File, fs *token.FileSet) (*types.Pack
 	return pkg, defs, nil
 }
 
-func withLoader(ctx context.Context, cb loaderCallback) context.Context {
-	return context.WithValue(ctx, "loader", cb)
+func isBlackListed(f string, blacklist []string) bool {
+	for _, rec := range blacklist {
+		if strings.Contains(f, rec) {
+			return true
+		}
+	}
+	return false
+}
+
+func blackListFrom(ctx context.Context) []string {
+	if checker, ok := ctx.Value("blackList").([]string); ok && checker != nil {
+		return checker
+	}
+	return []string{}
 }

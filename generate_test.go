@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"log"
 	"os"
 	"testing"
 )
@@ -59,7 +61,7 @@ func TestMap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := os.ReadFile("./test/mapType/map_singleton.go")
+	result, err := os.ReadFile("./test/mapType/mapType_singleton.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +174,16 @@ func TestComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	log.Println(len(b.String()), len(string(result)))
+
+	bstr := b.String()
+	for i := 0; i < len(string(result)); i++ {
+		if string(result)[i] != bstr[i] {
+			log.Println(fmt.Sprintf("%d: \"%s\" \"%s\"", i, string(result)[i-20:i+20], bstr[i-20:i+20]))
+			t.Fatal("diff")
+		}
+	}
+
 	if b.String() != string(result) {
 		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
 	}
@@ -194,7 +206,7 @@ func TestSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := os.ReadFile("./test/split/type_singleton.go")
+	result, err := os.ReadFile("./test/split/split_singleton.go")
 	if err != nil {
 		t.Fatal(err)
 	}

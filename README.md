@@ -142,4 +142,5 @@ The two main dependencies are :
 - [x] interface
 - [ ] generics
 - [x] tags (ignore)
-- [ ] test coverage & testing
+- [x] test coverage & testing
+- [ ] ambiguous function detector

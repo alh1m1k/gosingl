@@ -20,7 +20,9 @@ var scalar = [...]string{
 	"rune",
 	"string",
 	"boolean",
+	"bool",
 	"error",
+	"chan",
 	"any",
 }
 
