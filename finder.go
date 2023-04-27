@@ -45,11 +45,11 @@ func (s *structFinder) find(n ast.Node) bool {
 		}
 		switch exp := lookedFor.Recv.List[0].Type.(type) {
 		case *ast.StarExpr:
-			if strings.Contains(exp.X.(*ast.Ident).Name, s.name) {
+			if exp.X.(*ast.Ident).Name == s.name {
 				s.m = append(s.m, n)
 			}
 		case *ast.Ident:
-			if strings.Contains(exp.Name, s.name) {
+			if exp.Name == s.name {
 				s.m = append(s.m, n)
 			}
 		}
