@@ -2,16 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	cli "github.com/jawher/mow.cli"
-	"go/ast"
-	"go/build"
-	"go/parser"
-	"go/token"
 	"log"
 	"os"
-	"strings"
 )
 
 type Config struct {
@@ -52,7 +45,14 @@ func main() {
 			Comment:   *comment,
 			Write:     *write,
 		}
-		err = parsePackage(context.Background(), cfg)
+		ctx := context.Background()
+		ctx = SetupCtx(context.Background(), //as reference
+			nil, //global output target //"write" and "file" flags will be ignored if set
+			nil, //shared buffer, mostly internal
+			nil, //helper to generate name for unnamed function input parameters
+			nil, //checker which excludes duplicates from output
+		)
+		err = ParsePackage(ctx, cfg)
 		if err != nil {
 			exitOnError(err)
 		}
@@ -63,80 +63,4 @@ func main() {
 		exitOnError(err)
 	}
 
-}
-
-// parsePackage launchs the generation
-func parsePackage(ctx context.Context, cfg Config) error {
-
-	if len(strings.TrimSpace(cfg.Package)) <= 0 {
-		return errors.New("no directory submitted")
-	}
-
-	if len(strings.TrimSpace(cfg.Variable)) <= 0 {
-		//return errors.New("instance empty submitted")
-	}
-
-	if ctx.Value("writer") != nil {
-		cfg.Write = true
-	}
-
-	// get the path of the package
-	if strings.TrimSpace(os.Getenv("GOPATH")) == "" {
-		log.Println("WARNING: OS ENV GOPATH NOT SET!")
-	}
-	if strings.TrimSpace(os.Getenv("GOROOT")) == "" {
-		log.Println("WARNING: OS ENV GOROOT NOT SET!")
-	}
-
-	p, err := build.Default.Import(cfg.Package, ".", build.FindOnly)
-	if err != nil {
-		// handle error
-		return err
-	}
-	path := p.Dir
-
-	//pkgdir := os.Getenv("GOPATH") + "/src/" + *pkg
-	// reinstall package to be sure that we are uptodate
-	/*	log.Println("install", *pkg)
-		c := exec.Command(runtime.GOROOT()+"/bin/go", []string{"install", *pkg}...)
-		c.Stderr = os.Stderr
-		err := c.Run()
-		if err != nil {
-			return err
-		}*/
-
-	fset := token.NewFileSet()
-	var (
-		packages map[string]*ast.Package
-	)
-	log.Println("parse directory", path)
-	packages, err = parser.ParseDir(fset, path, nil, 0)
-
-	if err != nil {
-		return err
-	}
-
-	for pkg := range packages {
-		var files []*ast.File
-		for j := range packages[pkg].Files {
-			files = append(files, packages[pkg].Files[j])
-		}
-
-		for filePath := range packages[pkg].Files {
-			if !strings.Contains(filePath, "_singleton.go") {
-				err = generate(ctx, fset, files, packages[pkg].Files[filePath], filePath, path, cfg)
-				if err != nil {
-					if err != NotFoundError {
-						log.Println(fmt.Sprintf("inspect file: %s, !ERROR! %s", filePath, err)) //todo return error
-					}
-					continue
-				} else {
-					log.Println(fmt.Sprintf("inspect file: %s, Target Found!", filePath))
-				}
-			}
-		}
-
-	}
-
-	return nil
 }

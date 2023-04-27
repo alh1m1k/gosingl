@@ -1,6 +1,7 @@
 package callbackType
 
 import (
+	"context"
 	"fmt"
 	"unsafe"
 )
@@ -21,6 +22,11 @@ func (receiver CallbackType) CallbackTyped(a, b, c typedCb, p **typedCb) (*typed
 	return nil, nil, nil
 }
 
-func (receiver CallbackType) CallbackAnon(unsafe.Pointer, **typedCb, float32) {
+func (receiver CallbackType) CallbackAnon(unsafe.Pointer, **typedCb, float32, interface {
+	someStf(unsafe.Pointer, **typedCb, float32) func() error
+}) {
+
+}
+func (receiver CallbackType) CallbackAnonNaming(unsafe.Pointer, **typedCb, func(unsafe.Pointer, **typedCb, func(a, b, c int64) func(context.Context) error) error) {
 
 }

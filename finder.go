@@ -1,18 +1,13 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"go/ast"
-	"go/token"
-	"io"
 	"strings"
-
-	"os"
 )
 
 var (
-	NotFoundError = errors.New("target structure not found")
+	UnknownTargetError = errors.New("target structure unknown")
 )
 
 type structFinder struct {
@@ -24,7 +19,7 @@ type structFinder struct {
 }
 
 func newStructFinder(name string, filename string) *structFinder {
-	return &structFinder{name: name, filename: filename}
+	return &structFinder{name: strings.TrimSpace(name), filename: filename}
 }
 
 func (s *structFinder) find(n ast.Node) bool {
@@ -36,7 +31,7 @@ func (s *structFinder) find(n ast.Node) bool {
 		if lookedFor.Name == nil {
 			return true
 		}
-		if strings.Contains(lookedFor.Name.Name, s.name) {
+		if lookedFor.Name.Name == s.name {
 			switch lookedFor.Type.(type) {
 			case *ast.StructType:
 				s.s = lookedFor
@@ -75,63 +70,4 @@ func (s *structFinder) methods() []ast.Node {
 
 func (s *structFinder) imports() []*ast.ImportSpec {
 	return s.i
-}
-
-func generate(
-	ctx context.Context,
-	set *token.FileSet, //to context
-	allFiles []*ast.File, //to context
-	currentFile *ast.File,
-	fileName string,
-	dirname string,
-	cfg Config,
-) error {
-	sf := newStructFinder(cfg.Structure, fileName)
-	ast.Inspect(currentFile, sf.find)
-
-	// structure not found
-	if sf.structure() == nil {
-		return NotFoundError
-	}
-
-	var (
-		resetFile *os.File
-		writer    io.Writer
-		err       error
-		ok        bool
-	)
-
-	g := newGenerator(sf.imports(), allFiles, set, dirname, cfg)
-
-	if err = g.Do(ctx, sf.structure(), sf.methods()); err != nil {
-		return err
-	}
-
-	if writer, ok = ctx.Value("writer").(io.Writer); writer == nil || !ok {
-		if !cfg.Write {
-			writer = os.Stdout
-
-			ctx = context.WithValue(ctx, "writer", writer)
-		} else {
-			resetFilePath := strings.Replace(fileName, ".go", "_singleton.go", 1)
-			// delete if needed
-			_ = os.Remove(resetFilePath)
-			// writeType to a file
-			resetFile, err = os.OpenFile(resetFilePath, os.O_CREATE|os.O_RDWR, 0600)
-			if err != nil {
-				return err
-			}
-			writer = resetFile
-			ctx = context.WithValue(ctx, "writer", writer)
-		}
-	}
-
-	if internal, ok := ctx.Value("_internal").(bool); !ok || !internal { //todo refactor
-		//only first call (root) may call render
-		if err = g.WriteTo(writer); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

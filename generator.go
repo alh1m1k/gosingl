@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"github.com/dave/jennifer/jen"
 	"go/ast"
-	"go/importer"
-	"go/token"
 	"go/types"
 	"io"
 	"log"
@@ -17,86 +15,61 @@ import (
 
 var ParserWarning = errors.New("WARNING:")
 
+type loaderCallback func(ctx context.Context, pkg, structure, comment string) error
+
 // generator will work on the selected structure of one file
 type generator struct {
-	defs     map[*ast.Ident]types.Object
+	defs     packageDefs
 	pkg      *types.Package
-	fs       *token.FileSet
-	files    []*ast.File
 	imports  []*ast.ImportSpec
-	namer    *namer
 	path     string
 	cfg      Config
-	inited   bool
+	loader   loaderCallback
+	checker  Checker
 	internal bool //seted at runtime in do method
 	alice    string
 	output   *jen.File
 }
 
-func newGenerator(imports []*ast.ImportSpec, files []*ast.File, fs *token.FileSet, path string, cfg Config) *generator {
+func newGenerator(imports []*ast.ImportSpec, cfg Config, loader loaderCallback, path string) *generator {
 	return &generator{
-		imports: imports,
-		cfg:     cfg,
-		fs:      fs,
-		path:    path,
-		files:   files,
-		namer:   newNamer(),
+		imports:  imports,
+		path:     path,
+		cfg:      cfg,
+		loader:   loader,
+		internal: false,
+		output:   nil,
 	}
 }
 
-func (g *generator) init() error {
-
-	/**
-	initializing package parsing with the go/type
-	*/
-	g.defs = make(map[*ast.Ident]types.Object)
-	infos := &types.Info{
-		Defs: g.defs,
-	}
-
-	config := types.Config{Importer: importer.Default(), FakeImportC: true}
-
-	var err error
-	g.pkg, err = config.Check(g.path, g.fs, g.files, infos)
-	if err != nil {
-		log.Println("Warning:", err)
-		//return err
-	}
-
-	g.inited = true
-	return nil
+func (g *generator) BufferTo(output *jen.File) *generator {
+	g.output = output
+	return g
 }
 
 func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) error {
-
-	if !g.inited {
-		if err := g.init(); err != nil {
-			return err
-		}
-	}
-
-	if target == nil {
-		return NotFoundError
-	}
 
 	var (
 		ok, declared bool
 	)
 
-	switch target.Type.(type) {
-	case *ast.StructType:
-		//nope
-	case *ast.InterfaceType:
-		//nope
-	default:
-		return NotFoundError
+	//log.Println(g.path, target, len(targetMethods))
+
+	if target != nil {
+		switch target.Type.(type) {
+		case *ast.StructType:
+			//nope
+		case *ast.InterfaceType:
+			//nope
+		default:
+			return UnknownTargetError
+		}
 	}
 
-	var outputBuffer *jen.File
-	if outputBuffer, ok = ctx.Value("outputBuff").(*jen.File); !ok || outputBuffer == nil {
-		outputBuffer = jen.NewFilePathName(g.cfg.Package, packageName(g.cfg.Package))
-		ctx = context.WithValue(ctx, "outputBuff", outputBuffer)
+	if g.output == nil {
+		g.output = bufferFrom(ctx, g.cfg)
 	}
+	g.checker = chekerFrom(ctx)
 
 	if g.internal, ok = ctx.Value("_internal").(bool); !ok { //todo cross ref protection
 		g.internal = false
@@ -111,21 +84,20 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 
 	if len(strings.TrimSpace(g.cfg.Comment)) > 0 {
 		if g.internal {
-			outputBuffer.Line()
-			outputBuffer.Comment(fmt.Sprintf("%s from %s", strings.TrimSpace(g.cfg.Comment), g.path))
-			outputBuffer.Line()
+			g.output.Line()
+			g.output.Comment(fmt.Sprintf("%s from %s", strings.TrimSpace(g.cfg.Comment), g.path))
+			g.output.Line()
 		} else {
-			outputBuffer.PackageComment(strings.TrimSpace(g.cfg.Comment))
-			outputBuffer.Line()
+			g.output.PackageComment(strings.TrimSpace(g.cfg.Comment))
+			g.output.Line()
 		}
 	}
 
 	if len(targetMethods) == 0 && !declared {
-		//outputBuffer.Comment("first")
 		if _, ok = target.Type.(*ast.InterfaceType); ok {
-			outputBuffer.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
+			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
 		} else {
-			outputBuffer.Var().Id(g.cfg.Variable).Op("*").Id(target.Name.Name).Line()
+			g.output.Var().Id(g.cfg.Variable).Op("*").Id(target.Name.Name).Line()
 		}
 		declared = true
 	}
@@ -135,57 +107,60 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		case *ast.FuncDecl:
 			if method.Name.IsExported() {
 				if !declared {
-					//outputBuffer.Comment("second")
+					//g.output.Comment("second")
 					switch mType := method.Recv.List[0].Type.(type) {
 					case *ast.StarExpr: //mb [T]
-						outputBuffer.Var().Id(g.cfg.Variable).Op("*").Id(mType.X.(*ast.Ident).Name).Line()
+						g.output.Var().Id(g.cfg.Variable).Op("*").Id(mType.X.(*ast.Ident).Name).Line()
 					case *ast.Ident:
-						outputBuffer.Var().Id(g.cfg.Variable).Id(mType.Name).Line()
+						g.output.Var().Id(g.cfg.Variable).Id(mType.Name).Line()
 					}
 					declared = true
 				}
-				g.wrapFunction(outputBuffer, method.Name.Name, method.Type.Params, method.Type.Results, method.Doc.Text())
-				outputBuffer.Line()
+				if g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, g.cfg) {
+					g.wrapFunction(ctx, method.Name.Name, method.Type.Params, method.Type.Results, method.Doc.Text())
+					g.output.Line()
+				}
 			}
 		default:
 			log.Println("ubnormal value in targetMethods", reflect.ValueOf(targetMethods[i]).String())
 		}
 	}
 
-	switch structure := target.Type.(type) {
-	case *ast.StructType:
-		for _, field := range structure.Fields.List {
-			if g.isIgnored(field.Tag) {
-				continue
-			}
-			if err := g.digField(ctx, outputBuffer, field, field.Type); err != nil {
-				if errors.Is(err, ParserWarning) {
-					log.Println(err)
+	if target != nil {
+		switch structure := target.Type.(type) {
+		case *ast.StructType:
+			for _, field := range structure.Fields.List {
+				//log.Println(field.Names)
+				if g.isIgnored(field.Tag) {
 					continue
-				} else {
-					return err
+				}
+				if err := g.digField(ctx, field, field.Type); err != nil {
+					if errors.Is(err, ParserWarning) {
+						log.Println(err)
+						continue
+					} else {
+						return err
+					}
 				}
 			}
-		}
-	case *ast.InterfaceType:
-		for _, field := range structure.Methods.List {
-			if g.isIgnored(field.Tag) {
-				continue
-			}
-			if err := g.digField(ctx, outputBuffer, field, field.Type); err != nil {
-				if errors.Is(err, ParserWarning) {
-					log.Println(err)
+		case *ast.InterfaceType:
+			for _, field := range structure.Methods.List {
+				if g.isIgnored(field.Tag) {
 					continue
-				} else {
-					return err
+				}
+				if err := g.digField(ctx, field, field.Type); err != nil {
+					if errors.Is(err, ParserWarning) {
+						log.Println(err)
+						continue
+					} else {
+						return err
+					}
 				}
 			}
+		default:
+			panic("must not happened")
 		}
-	default:
-		panic("must not happened")
 	}
-
-	g.output = outputBuffer //todo remove
 
 	return nil
 }
@@ -197,15 +172,17 @@ func (g *generator) WriteTo(writer io.Writer) error {
 	return nil
 }
 
-func (g *generator) digField(ctx context.Context, outputBuffer *jen.File, field *ast.Field, inner ast.Expr) error {
+func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Expr) error {
 	switch fieldTyped := inner.(type) {
 	case *ast.FuncType:
 		if len(field.Names) > 0 && field.Names[0].IsExported() {
-			g.wrapFunction(outputBuffer, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
-			outputBuffer.Line()
+			if g.checker.Valid(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, g.cfg) {
+				g.wrapFunction(ctx, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
+				g.output.Line()
+			}
 		}
 	case *ast.StarExpr:
-		g.digField(ctx, outputBuffer, field, fieldTyped.X) //keep *
+		g.digField(ctx, field, fieldTyped.X) //keep *
 	case *ast.SelectorExpr:
 		if len(field.Names) == 0 {
 			if err := g.digExternalDecl(ctx, fieldTyped); err != nil {
@@ -235,7 +212,7 @@ func (g *generator) digExternalDecl(ctx context.Context, str *ast.SelectorExpr) 
 		if importSpec == nil {
 			return fmt.Errorf("%w unable to locate import by name", ParserWarning)
 		}
-		err := g.parsePackage(ctx, importCanon(importSpec.Path.Value), str.Sel.Name, fmt.Sprintf("<%s>", str))
+		err := g.parsePackage(ctx, importCanon(importSpec.Path.Value), str.Sel.Name, fmt.Sprintf("<%s.%s>", str.X, str.Sel.Name))
 		if err != nil {
 			return err
 		}
@@ -246,34 +223,10 @@ func (g *generator) digExternalDecl(ctx context.Context, str *ast.SelectorExpr) 
 }
 
 func (g *generator) parsePackage(ctx context.Context, pkg, structure, comment string) error {
-	config := g.cfg
-	config.Package = importCanon(pkg)
-	config.Structure = structure
-	config.Comment = comment
-	if config.Deep > 0 {
-		config.Deep--
-		if config.Deep == 0 {
-			return fmt.Errorf("%s:%s skipped as too deep inspect", pkg, structure)
-		}
-	}
-	ctx = context.WithValue(ctx, "_internal", true)
-	ctx = context.WithValue(ctx, "_alice", config.Package)
-	err := parsePackage(ctx, config)
+	err := g.loader(ctx, pkg, structure, comment)
 	if err != nil {
 		return err
 	}
-	return nil
-}
-
-func (g *generator) digInternalDecl(ctx context.Context, structure, comment string) error {
-	ctx = context.WithValue(ctx, "_internal", true)
-	ctx = context.WithValue(ctx, "_alice", g.cfg.Package)
-
-	//sf := newStructFinder(structure, g.path)
-	//ast.Inspect(g., sf.find)
-
-	g.Do(ctx, &ast.TypeSpec{}, []ast.Node{})
-
 	return nil
 }
 
@@ -288,18 +241,17 @@ func (g *generator) isIgnored(tag *ast.BasicLit) bool {
 	return false
 }
 
-func (g *generator) wrapFunction(buffer *jen.File, name string, in, out *ast.FieldList, comment string) {
+func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.FieldList, comment string) {
 	if len(comment) > 0 {
-		buffer.Comment(comment)
+		g.output.Comment(comment)
 	}
-	g.namer.Reset()
-	fnBuilder := jen.Func().Add(g.buildFunctionSignature(name, in, out, true))
+	namer := g.namerFrom(ctx) //refresh namer for every 1 level function
+	fnBuilder := jen.Add(g.buildFunction(name, in, out, namer))
 	underFn := jen.Id(g.cfg.Variable).Dot(name).CallFunc(func(group *jen.Group) {
+		for _, fieldIdent := range namer.Values() {
+			group.Add(jen.Id(fieldIdent))
+		}
 		for _, field := range in.List {
-			for _, fieldIdent := range g.namer.Values() {
-				group.Add(jen.Id(fieldIdent))
-			}
-			g.namer.Reset()
 			for _, fieldIdent := range field.Names {
 				if _, ok := field.Type.(*ast.Ellipsis); ok {
 					group.Add(jen.Id(fieldIdent.Name).Op("..."))
@@ -316,29 +268,41 @@ func (g *generator) wrapFunction(buffer *jen.File, name string, in, out *ast.Fie
 			grp.Add(underFn)
 		}
 	})
-	buffer.Add(fnBuilder)
+	g.output.Add(fnBuilder)
 }
 
-func (g *generator) buildFunctionSignature(name string, in, out *ast.FieldList, generateNameForAnon bool) *jen.Statement {
-	fnBuilder := jen.Id(name)
+func (g *generator) namerFrom(ctx context.Context) Namer {
+	if namer, ok := ctx.Value("namer").(Namer); !ok || namer == nil {
+		namer = newParameterNamer()
+		return namer
+	} else {
+		return namer.NewNamer()
+	}
+}
+
+func (g *generator) buildFunction(name string, in, out *ast.FieldList, namer Namer) *jen.Statement {
+	fnBuilder := jen.Func()
+	if len(name) > 0 {
+		fnBuilder.Id(name)
+	}
 	if in.NumFields() > 0 {
-		fnBuilder.Params(g.buildParams(true && generateNameForAnon, in)...)
+		fnBuilder.Params(g.buildParams(in, namer)...)
 	} else {
 		fnBuilder.Op("()")
 	}
 	outFieldsCnt := out.NumFields()
 	if out != nil && out.NumFields() > 0 {
-		if outFieldsCnt == 1 {
-			fnBuilder.List(g.buildParams(false && generateNameForAnon, out)...)
+		if outFieldsCnt == 1 && out.List[0].Names == nil { // (named type) as ret value must be in bracket too
+			fnBuilder.List(g.buildParams(out, nil)...)
 		} else {
-			fnBuilder.Params(g.buildParams(false && generateNameForAnon, out)...)
+			fnBuilder.Params(g.buildParams(out, nil)...)
 		}
 	}
 
 	return fnBuilder
 }
 
-func (g *generator) buildParams(generateNameForAnon bool, params *ast.FieldList) []jen.Code {
+func (g *generator) buildParams(params *ast.FieldList, namer Namer) []jen.Code {
 	var result []jen.Code
 	for _, field := range params.List {
 		var param *jen.Statement
@@ -351,8 +315,8 @@ func (g *generator) buildParams(generateNameForAnon bool, params *ast.FieldList)
 		}
 		if param == nil { //anon param (probably return value)
 			param = &jen.Statement{}
-			if generateNameForAnon {
-				param.Id(g.namer.New(""))
+			if namer != nil {
+				param.Id(namer.New(""))
 			}
 		}
 		param = g.recursBuildParam(field.Type, param)
@@ -398,7 +362,8 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		root.InterfaceFunc(func(group *jen.Group) {
 			for _, m := range exp.Methods.List {
 				if method, ok := m.Type.(*ast.FuncType); ok {
-					group.Add(g.buildFunctionSignature(m.Names[0].Name, method.Params, method.Results, false))
+					//shift (remove) func keyword from func abc()
+					group.Add(exprShift(g.buildFunction(m.Names[0].Name, method.Params, method.Results, nil)))
 				} else {
 					group.Add(g.recursBuildParam(m.Type, &jen.Statement{}))
 				}
@@ -424,7 +389,7 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 					fldState = fldState.Id(fName.Name).Op(",")
 				}
 				if len(f.Names) > 0 { //mb len(*fldState)
-					fldState = exprUndo(fldState) //skip last ,
+					fldState = exprPop(fldState) //skip last ,
 				}
 				statement := g.recursBuildParam(f.Type, fldState)
 				if f.Tag != nil {
@@ -433,6 +398,9 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 				group.Add(statement) //todo add other type of tag
 			}
 		})
+	case *ast.FuncType:
+		//todo recursive naming resolution
+		root.Add(g.buildFunction("", exp.Params, exp.Results, nil))
 	case *ast.BasicLit:
 		root.Id(exp.Value)
 	case *ast.BadExpr:
@@ -469,12 +437,21 @@ func packageName(packagePath string) string {
 	return slice[len(slice)-1]
 }
 
-func exprUndo(exp *jen.Statement) *jen.Statement {
+func exprPop(exp *jen.Statement) *jen.Statement {
 	proxy := *exp
 	if len(proxy) <= 0 {
 		return nil
 	}
 	proxy = proxy[0 : len(proxy)-1]
+	return &proxy
+}
+
+func exprShift(exp *jen.Statement) *jen.Statement {
+	proxy := *exp
+	if len(proxy) <= 0 {
+		return nil
+	}
+	proxy = proxy[1:]
 	return &proxy
 }
 
@@ -495,4 +472,20 @@ func tagToMap(lit *ast.BasicLit) map[string]string {
 		result[tagsPart[0]] = strings.Trim(tagsPart[1], "\"")
 	}
 	return result
+}
+
+func chekerFrom(ctx context.Context) Checker {
+	if checker, ok := ctx.Value("checker").(Checker); ok && checker != nil {
+		return checker
+	}
+	//log.Println("new checker")
+	return newUniqueChecker() //must not be happened
+}
+
+func bufferFrom(ctx context.Context, cfg Config) *jen.File {
+	if buffer, ok := ctx.Value("buffer").(*jen.File); ok && buffer != nil {
+		return buffer
+	}
+	//log.Println("new buffer")
+	return jen.NewFilePathName(cfg.Package, packageName(cfg.Package)) //must not be happened
 }

@@ -29,11 +29,11 @@ func TestInterface(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := os.ReadFile("./test/interfaceType/interface_singleton.go")
+	result, err := os.ReadFile("./test/interfaceType/interfaceType_singleton.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestMap(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -82,11 +82,11 @@ func TestCallback(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := os.ReadFile("./test/callbackType/callback_singleton.go")
+	result, err := os.ReadFile("./test/callbackType/callbackType_singleton.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,11 +109,11 @@ func TestSlice(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := os.ReadFile("./test/arraySliceType/arrayslice_singleton.go")
+	result, err := os.ReadFile("./test/arraySliceType/arraySliceType_singleton.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestEmpty(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +163,7 @@ func TestComposition(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -190,7 +190,7 @@ func TestSplit(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,7 +217,7 @@ func TestDeep(t *testing.T) {
 	}
 
 	b := &bytes.Buffer{}
-	if err := parsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
+	if err := ParsePackage(context.WithValue(ctx, "writer", b), cfg); err != nil {
 		t.Fatal(err)
 	}
 

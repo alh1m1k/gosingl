@@ -1,4 +1,4 @@
-package empty
+package deep
 
 type deep struct {
 	subfield1 int
