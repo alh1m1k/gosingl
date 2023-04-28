@@ -9,26 +9,28 @@ go get github.com/alh1m1k/gosingle
 
 ## Usage
 
-The application does not perform any initialization, only declaration.
+The generator does not generate any initialization code, only declaration.
 Use module level init() or any other way to properly initialize singleton.
 
-By default application recursively inspect target structure or interface as well as it composition members.
+By default generator recursively inspect target structure or interface as well as it composition members.
 It seek for exported field function, exported methods and then wrap it with module level proxy function.
 
 Global singleton variable may be hidden via lower case variable name. Variable type (pointer or value) currently 
 defined by target type (for interfaces) or rcv type of the first exported method and not 100% accurate.
 See todo and sources for more information.
 
-Collision detector for function name and signature currently not 100% accurate (See todo and sources) and keep
-first collided function in output instead of dropping it all.
+Collision detector for function name and signature currently not 100% accurate (See todo and sources), it keept
+the first collided function into output instead of dropping it all.
 
-Composition member of field may be excluded from inspect via tag ``` `singl:"ignore"'```
+Composition member of field type may be excluded from inspect via tag ``` `singl:"ignore"'```
 
-Filename of output file has template name ```<package>/package_singleton.go``` and currently cannot be changed via cli.
+Filename for output file has template ```<package>/package_singleton.go``` and currently cannot be changed via cli.
 
 File suffix ```_test.go``` and ```_singleton.go``` are excluded from analyze.
 
 Path to source files a resolved via ```build.Default.Import(pkg, ".", build.FindOnly)```
+
+All scalar type and all composite type are supported, as well as it's mixing and types decl are supported.
 
 With the following structure in the executor.go file :
 
@@ -133,8 +135,8 @@ just add the -w flag to write it to queryExecutor_singleton.go.
 ## Status
 
 Package in ready state. All basic functionality are implemented.
-It has test coverage but has lack of usage in real cases.
-Generic currently not supported as it not trivial convert ```struct[T]``` to ```func[T] ```
+It has test coverage, but has lack of usage in real cases. So it can be broken, but not entirely :)
+Generic currently not supported as it not trivial to convert ```struct[T]``` to ```func[T] ```
 
 ## Dependencies
 
@@ -159,6 +161,6 @@ in most cases.
 - [ ] generics
 - [x] tags (ignore)
 - [x] test coverage & testing
-- [ ] ambiguous function detector
+- [x] ambiguous function detector
 - [ ] later variable decl
 - [ ] drop custom cli
