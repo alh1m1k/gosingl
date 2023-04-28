@@ -17,6 +17,8 @@ import (
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/empty empty
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/composition composition
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/split split
+//go:generate ./gosingl -w --suffix "_1_singleton.go" --deep 1 github.com/alh1m1k/gosingl/test/deep deep
+//go:generate ./gosingl -w --suffix "_2_singleton.go" --deep 2 github.com/alh1m1k/gosingl/test/deep deep
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/deep deep
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/mapTarget mapTarget
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/arrayTarget arrayTarget

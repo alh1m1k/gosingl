@@ -114,15 +114,29 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	pending = make([]pendingParserReq, 0)
 	pendingMux.Unlock()
 
-	if len(strings.TrimSpace(cfg.Package)) <= 0 {
+	cfg.Package = strings.TrimSpace(cfg.Package)
+	cfg.Target = strings.TrimSpace(cfg.Target)
+	cfg.Variable = strings.TrimSpace(cfg.Variable)
+	cfg.Suffix = strings.TrimSpace(cfg.Suffix)
+	cfg.Path = strings.TrimSpace(cfg.Path)
+
+	if len(cfg.Package) == 0 {
 		return errors.New("no directory submitted")
 	}
 
-	if len(strings.TrimSpace(cfg.Variable)) <= 0 {
-		//return errors.New("instance empty submitted")
+	if len(cfg.Target) == 0 {
+		return errors.New("no target submitted")
 	}
 
-	if ctx.Value("writer") != nil {
+	if len(cfg.Variable) == 0 {
+		cfg.Variable = "Instance"
+	}
+
+	if len(cfg.Suffix) == 0 {
+		cfg.Suffix = "_singleton.go"
+	}
+
+	if ctx.Value("writer") != nil || len(cfg.Path) > 0 || cfg.Suffix != "_singleton.go" {
 		cfg.Write = true
 	}
 
@@ -138,23 +152,16 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	//loader := recursiveLoaderBuilder(buffer, cfg)
 	loader := linearLoaderBuilder(buffer, cfg)
 
-	/*	ctx = SetupCtx(context.Background(), //as reference
-		nil,
-		nil,
-		nil,
-		nil,
-	)*/
-
 	checker := newUniqueChecker()
-	ctx = context.WithValue(ctx, "_internal", false)    //reset in rare case of context reuse
-	ctx = context.WithValue(ctx, "_alice", cfg.Package) //reset in rare case of context reuse
+	/*	ctx = context.WithValue(ctx, "_internal", false)    //reset in rare case of context reuse
+		ctx = context.WithValue(ctx, "_alice", cfg.Package) //reset in rare case of context reuse*/
 	ctx = SetupCtx(ctx,
 		nil,
 		buffer,
 		newParameterNamer(),
 		checker,
-		[]string{"_test.go", "_singleton.go"}, //todo merge
-		true,                                  //it sets as default
+		[]string{"_test.go", cfg.Suffix}, //todo merge
+		true,                             //it sets as default
 	)
 
 	if err = generate(ctx, loader, cfg); err != nil {
@@ -190,11 +197,17 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 
 			ctx = context.WithValue(ctx, "writer", writer)
 		} else {
-			p, err := build.Default.Import(cfg.Package, ".", build.FindOnly)
-			if err != nil {
-				panic(err)
+			var resetFilePath string
+			if cfg.Path == "" { //todo path validation
+				p, err := build.Default.Import(cfg.Package, ".", build.FindOnly)
+				if err != nil {
+					panic(err)
+				}
+				//resetFilePath = p.Dir + "/" + packageName(importCanon(cfg.Package)) + cfg.Suffix
+				resetFilePath = p.Dir + "/" + cfg.Target + cfg.Suffix
+			} else {
+				resetFilePath = cfg.Path
 			}
-			resetFilePath := p.Dir + "/" + packageName(importCanon(cfg.Package)) + "_singleton.go"
 			// delete if needed
 			_ = os.Remove(resetFilePath)
 			// writeType to a file
@@ -323,6 +336,7 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 		if err != nil {
 			return err
 		}
+		//initPackage is @deprecated and will be removed in future
 		records[cfg.Package].Package, records[cfg.Package].packageDefs, err = initPackage(records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet)
 		p.inited = true
 	}
