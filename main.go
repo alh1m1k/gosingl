@@ -49,7 +49,7 @@ func main() {
 			Write:     *write,
 		}
 		ctx := context.Background()
-		ctx = SetupCtx(context.Background(), //as reference
+		ctx = SetupCtx(ctx, //as reference
 			nil, //global output target //"write" and "file" flags will be ignored if set
 			nil, //shared buffer, mostly internal
 			nil, //helper to generate name for unnamed function input parameters

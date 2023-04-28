@@ -47,10 +47,10 @@ func (g *generator) BufferTo(output *jen.File) *generator {
 	return g
 }
 
-func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) error {
+func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) (context.Context, error) {
 
 	var (
-		ok, declared bool
+		ok bool
 	)
 
 	//log.Println(g.path, target, len(targetMethods))
@@ -62,7 +62,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		case *ast.InterfaceType:
 			//nope
 		default:
-			return UnknownTargetError
+			return ctx, UnknownTargetError
 		}
 	}
 
@@ -80,7 +80,6 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 			log.Println("WARNING: internal generator call not supplied with package alice")
 		}
 	}
-	declared = g.internal
 
 	if len(strings.TrimSpace(g.cfg.Comment)) > 0 {
 		if g.internal {
@@ -93,33 +92,14 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		}
 	}
 
-	if len(targetMethods) == 0 && !declared {
-		if _, ok = target.Type.(*ast.InterfaceType); ok {
-			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
-		} else {
-			g.output.Var().Id(g.cfg.Variable).Op("*").Id(target.Name.Name).Line()
-		}
-		declared = true
-	}
+	_, ctx = g.declareVariable(ctx, target, targetMethods)
 
 	for i := range targetMethods {
 		switch method := targetMethods[i].(type) {
 		case *ast.FuncDecl:
-			if method.Name.IsExported() {
-				if !declared {
-					//g.output.Comment("second")
-					switch mType := method.Recv.List[0].Type.(type) {
-					case *ast.StarExpr: //mb [T]
-						g.output.Var().Id(g.cfg.Variable).Op("*").Id(mType.X.(*ast.Ident).Name).Line()
-					case *ast.Ident:
-						g.output.Var().Id(g.cfg.Variable).Id(mType.Name).Line()
-					}
-					declared = true
-				}
-				if g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, isInterfaceFrom(ctx), g.cfg) {
-					g.wrapFunction(ctx, method.Name.Name, method.Type.Params, method.Type.Results, method.Doc.Text())
-					g.output.Line()
-				}
+			if method.Name.IsExported() && g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, isInterfaceFrom(ctx), g.cfg) {
+				g.wrapFunction(ctx, method.Name.Name, method.Type.Params, method.Type.Results, method.Doc.Text())
+				g.output.Line()
 			}
 		default:
 			log.Println("ubnormal value in targetMethods", reflect.ValueOf(targetMethods[i]).String())
@@ -139,7 +119,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 						log.Println(err)
 						continue
 					} else {
-						return err
+						return ctx, err
 					}
 				}
 			}
@@ -155,7 +135,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 						log.Println(err)
 						continue
 					} else {
-						return err
+						return ctx, err
 					}
 				}
 			}
@@ -164,7 +144,51 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		}
 	}
 
-	return nil
+	return ctx, nil
+}
+
+func (g *generator) declareVariable(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) (bool, context.Context) {
+
+	declared := isDeclaredFrom(ctx)
+	if declared {
+		return declared, ctx
+	}
+
+	if target != nil {
+		if _, ok := target.Type.(*ast.InterfaceType); ok {
+			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
+			ctx = WithDeclared(ctx)
+			return true, ctx
+		}
+	}
+
+	for i := range targetMethods {
+		switch method := targetMethods[i].(type) {
+		case *ast.FuncDecl:
+			if method.Name.IsExported() {
+				switch mType := method.Recv.List[0].Type.(type) {
+				case *ast.StarExpr: //mb [T]
+					g.output.Var().Id(g.cfg.Variable).Op("*").Id(mType.X.(*ast.Ident).Name).Line()
+					ctx = WithDeclared(ctx)
+					return true, ctx
+				case *ast.Ident:
+					g.output.Var().Id(g.cfg.Variable).Id(mType.Name).Line()
+					ctx = WithDeclared(ctx)
+					return true, ctx
+				default:
+					log.Println("wrong declaration attempt")
+				}
+			}
+		}
+	}
+
+	//special case fail to declare, set placeholder
+
+	g.output.Var().Id(g.cfg.Variable).Op("*").Id(target.Name.Name).Line()
+	ctx = WithDeclared(ctx)
+	return true, ctx
+
+	//return false, ctx
 }
 
 func (g *generator) WriteTo(writer io.Writer) error {
@@ -509,6 +533,17 @@ func isInterfaceFrom(ctx context.Context) bool {
 	return false
 }
 
+func isDeclaredFrom(ctx context.Context) bool {
+	if _declared, ok := ctx.Value("_declared").(bool); ok {
+		return _declared
+	}
+	return false
+}
+
 func WithInterfaceWalk(ctx context.Context) context.Context {
 	return context.WithValue(ctx, "_markInterfaceWalk", true)
+}
+
+func WithDeclared(ctx context.Context) context.Context {
+	return context.WithValue(ctx, "_declared", true)
 }

@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -24,7 +25,7 @@ var (
 type loaderRecord struct {
 	*types.Package
 	packageDefs
-	files   []*ast.File
+	files   map[string]*ast.File
 	fileSet *token.FileSet
 	targets []string
 	path    string
@@ -43,13 +44,6 @@ var (
 	pendingMux               = sync.Mutex{}
 	records    loaderRecords = make(loaderRecords)
 )
-
-func loader(ctx context.Context, cfg Config) {
-	pending = append(pending, pendingParserReq{
-		Config:  cfg,
-		Context: ctx,
-	})
-}
 
 var mut sync.Mutex
 
@@ -113,6 +107,12 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 		resetFile *os.File
 		err       error
 	)
+	mut.Lock()
+	records = make(loaderRecords)
+	mut.Unlock()
+	pendingMux.Lock()
+	pending = make([]pendingParserReq, 0)
+	pendingMux.Unlock()
 
 	if len(strings.TrimSpace(cfg.Package)) <= 0 {
 		return errors.New("no directory submitted")
@@ -146,6 +146,8 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	)*/
 
 	checker := newUniqueChecker()
+	ctx = context.WithValue(ctx, "_internal", false)    //reset in rare case of context reuse
+	ctx = context.WithValue(ctx, "_alice", cfg.Package) //reset in rare case of context reuse
 	ctx = SetupCtx(ctx,
 		nil,
 		buffer,
@@ -164,7 +166,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	for len(pending) > 0 && (untilEnd || turnsLeft > 0) {
 
 		pendingMux.Lock()
-		newTasks := make([]pendingParserReq, len(pending))
+		newTasks := make([]pendingParserReq, 0, len(pending))
 		copy(newTasks, pending)
 		pending = pending[0:0]
 		pendingMux.Unlock()
@@ -261,7 +263,7 @@ func recursiveLoaderBuilder(buffer *jen.File, cfg Config) func(ctx context.Conte
 	return recursiveLoader
 }
 
-func collectFiles(pkg string, blacklist []string) (path string, files []*ast.File, fileSet *token.FileSet, err error) {
+func collectFiles(pkg string, blacklist []string) (path string, files map[string]*ast.File, fileSet *token.FileSet, err error) {
 	var (
 		packages map[string]*ast.Package
 		p        *build.Package
@@ -281,10 +283,11 @@ func collectFiles(pkg string, blacklist []string) (path string, files []*ast.Fil
 		return "", nil, nil, err
 	}
 
+	files = make(map[string]*ast.File)
 	for pPath := range packages {
 		for j := range packages[pPath].Files {
 			if !isBlackListed(j, blacklist) {
-				files = append(files, packages[pPath].Files[j])
+				files[j] = packages[pPath].Files[j]
 			} else {
 				//log.Println(j, "ignored")
 			}
@@ -296,8 +299,9 @@ func collectFiles(pkg string, blacklist []string) (path string, files []*ast.Fil
 
 func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 	var (
-		p  *loaderRecord
-		ok bool
+		p   *loaderRecord
+		ok  bool
+		err error
 	)
 
 	mut.Lock()
@@ -317,9 +321,6 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 
 	p.Lock()
 	if !p.inited {
-		var (
-			err error
-		)
 		records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet, err = collectFiles(cfg.Package, blackListFrom(ctx))
 		if err != nil {
 			return err
@@ -336,13 +337,19 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 	records[cfg.Package].targets = append(records[cfg.Package].targets, cfg.Structure)
 	p.Unlock()
 
-	for _, file := range records[cfg.Package].files {
+	indexes := make([]string, 0, len(records[cfg.Package].files))
+	for path := range records[cfg.Package].files {
+		indexes = append(indexes, path)
+	}
+	sort.Strings(indexes)
+	for _, file := range indexes {
 		sf := newStructFinder(cfg.Structure, cfg.Package)
-		ast.Inspect(file, sf.find)
+		ast.Inspect(records[cfg.Package].files[file], sf.find)
 		//todo check if struct is exist in package
 		if sf.structure() != nil || len(sf.methods()) > 0 {
+			log.Println("declare", cfg.Package)
 			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].path)
-			if err := gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
+			if ctx, err = gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
 				log.Println(err)
 				continue
 			}
@@ -352,13 +359,11 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 	return nil
 }
 
-func initPackage(path string, files []*ast.File, fs *token.FileSet) (*types.Package, packageDefs, error) {
+func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*types.Package, packageDefs, error) {
 
 	/**
 	initializing package parsing with the go/type
 	*/
-
-	//log.Println("init pack", path)
 
 	defs := make(map[*ast.Ident]types.Object)
 	infos := &types.Info{
@@ -368,7 +373,8 @@ func initPackage(path string, files []*ast.File, fs *token.FileSet) (*types.Pack
 	config := types.Config{Importer: importer.Default(), FakeImportC: true}
 
 	var err error
-	pkg, err := config.Check(path, fs, files, infos)
+
+	pkg, err := config.Check(path, fs, mapToSlice(files), infos)
 
 	if err != nil {
 		log.Println("Warning:", err)
@@ -392,4 +398,12 @@ func blackListFrom(ctx context.Context) []string {
 		return checker
 	}
 	return []string{}
+}
+
+func mapToSlice[Key comparable, Value any](from map[Key]Value) []Value {
+	to := make([]Value, 0, len(from))
+	for i := range from {
+		to = append(to, from[i])
+	}
+	return to
 }

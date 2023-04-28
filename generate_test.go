@@ -40,7 +40,7 @@ func TestInterface(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
 }
@@ -67,7 +67,7 @@ func TestMap(t *testing.T) {
 	}
 
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
 }
@@ -94,7 +94,7 @@ func TestCallback(t *testing.T) {
 	}
 
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
 }
@@ -121,7 +121,7 @@ func TestSlice(t *testing.T) {
 	}
 
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
 }
@@ -148,7 +148,7 @@ func TestEmpty(t *testing.T) {
 	}
 
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
 }
@@ -174,18 +174,8 @@ func TestComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	log.Println(len(b.String()), len(string(result)))
-
-	bstr := b.String()
-	for i := 0; i < len(string(result)); i++ {
-		if string(result)[i] != bstr[i] {
-			log.Println(fmt.Sprintf("%d: \"%s\" \"%s\"", i, string(result)[i-20:i+20], bstr[i-20:i+20]))
-			t.Fatal("diff")
-		}
-	}
-
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
 }
@@ -212,7 +202,7 @@ func TestSplit(t *testing.T) {
 	}
 
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
 }
@@ -239,7 +229,33 @@ func TestDeep(t *testing.T) {
 	}
 
 	if b.String() != string(result) {
-		t.Fatalf("result is not the same as expected : got \n%q \n expected  \n%q", b.String(), result)
+		t.Fatalf("result is not the same as expected : %s\n %s", diff(b.String(), string(result), 10), b.String())
 	}
 
+}
+
+func diff(generated, reference string, offset int) string {
+	log.Println("str1:", len(generated), "str2:", len(reference))
+	for i := 0; i < len(generated); i++ {
+		if generated[i] != reference[i] {
+			offset = min[int](offset, len(generated)-i)
+			offset = min[int](offset, len(reference)-i)
+			return fmt.Sprintf("symbol %d: gen: \"%s\" ref: \"%s\"", i, generated[i:i+offset], reference[i:i+offset])
+		}
+	}
+	return ""
+}
+
+func min[T int](s ...T) T {
+	if len(s) == 0 {
+		var zero T
+		return zero
+	}
+	m := s[0]
+	for _, v := range s {
+		if m > v {
+			m = v
+		}
+	}
+	return m
 }
