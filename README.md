@@ -1,6 +1,6 @@
 # Gosingle
 
-gosingle generate module level singleton based on the chosen structure or interface.
+gosingle generate module level singleton based on the chosen structure or interface (map slice or array defined as type also supported).
 ## Installation
 
 ```sh
@@ -12,7 +12,7 @@ go get github.com/alh1m1k/gosingle
 The generator does not generate any initialization code, only declaration.
 Use module level init() or any other way to properly initialize singleton.
 
-By default generator recursively inspect target structure or interface as well as it composition members.
+By default, generator recursively inspect target structure or interface as well as it composition members.
 It seek for exported field function, exported methods and then wrap it with module level proxy function.
 
 Global singleton variable may be hidden via lower case variable name. Variable type (pointer or value) currently 
@@ -28,9 +28,11 @@ Filename for output file has template ```<package>/package_singleton.go``` and c
 
 File suffix ```_test.go``` and ```_singleton.go``` are excluded from analyze.
 
-Path to source files a resolved via ```build.Default.Import(pkg, ".", build.FindOnly)```
+Path to source files a resolved via ```build.Default.Import(pkg, ".", build.FindOnly)``` be careful with path and naming
 
 All scalar type and all composite type are supported, as well as it's mixing and types decl are supported.
+
+Generator will rename all ```_``` or anonymous function parameter to ```p0, p1 ...pn``` in order to generate valid function call 
 
 With the following structure in the executor.go file :
 

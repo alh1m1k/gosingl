@@ -55,6 +55,12 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 			//nope
 		case *ast.InterfaceType:
 			//nope
+		case *ast.MapType:
+			//nope
+		case *ast.SliceExpr:
+			//nope
+		case *ast.ArrayType:
+			//nope
 		default:
 			return ctx, UnknownTargetError
 		}
@@ -130,6 +136,12 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 					}
 				}
 			}
+		case *ast.MapType:
+			//no internal field to inspect
+		case *ast.SliceExpr:
+			//no internal field to inspect
+		case *ast.ArrayType:
+			//no internal field to inspect
 		default:
 			panic("must not happened")
 		}
@@ -146,7 +158,20 @@ func (g *generator) declareVariable(ctx context.Context, target *ast.TypeSpec, t
 	}
 
 	if target != nil {
-		if _, ok := target.Type.(*ast.InterfaceType); ok {
+		switch target.Type.(type) {
+		case *ast.InterfaceType:
+			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
+			ctx = WithDeclared(ctx)
+			return true, ctx
+		case *ast.MapType:
+			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
+			ctx = WithDeclared(ctx)
+			return true, ctx
+		case *ast.ArrayType:
+			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
+			ctx = WithDeclared(ctx)
+			return true, ctx
+		case *ast.SliceExpr:
 			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
 			ctx = WithDeclared(ctx)
 			return true, ctx
@@ -175,7 +200,7 @@ func (g *generator) declareVariable(ctx context.Context, target *ast.TypeSpec, t
 
 	//special case fail to declare, set placeholder
 
-	g.output.Var().Id(g.cfg.Variable).Op("*").Id(target.Name.Name).Line()
+	g.output.Var().Id(g.cfg.Variable).Op("*").Id(g.cfg.Target).Line()
 	ctx = WithDeclared(ctx)
 	return true, ctx
 
@@ -287,16 +312,19 @@ func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.
 		underFn.Dot(name)
 	}
 	underFn.CallFunc(func(group *jen.Group) {
-		for _, fieldIdent := range namer.Values() {
-			group.Add(jen.Id(fieldIdent))
-		}
+		names := namer.Values()
 		for _, field := range in.List {
 			for _, fieldIdent := range field.Names {
-				if _, ok := field.Type.(*ast.Ellipsis); ok {
-					group.Add(jen.Id(fieldIdent.Name).Op("..."))
+				if g.isAnonIdent(fieldIdent) {
+					g.addFnParam(group, field, names[0])
+					names = names[1:]
 				} else {
-					group.Add(jen.Id(fieldIdent.Name))
+					g.addFnParam(group, field, fieldIdent.Name)
 				}
+			}
+			if len(field.Names) == 0 {
+				g.addFnParam(group, field, names[0])
+				names = names[1:]
 			}
 		}
 	})
@@ -308,6 +336,24 @@ func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.
 		}
 	})
 	g.output.Add(fnBuilder)
+}
+
+func (g *generator) addFnParam(fnGroup *jen.Group, field *ast.Field, name string) {
+	if _, ok := field.Type.(*ast.Ellipsis); ok {
+		fnGroup.Add(jen.Id(name).Op("..."))
+	} else {
+		fnGroup.Add(jen.Id(name))
+	}
+}
+
+func (g *generator) isAnonIdent(ident *ast.Ident) bool {
+	if ident == nil {
+		return true
+	}
+	if ident.Name == "" || ident.Name == "_" {
+		return true
+	}
+	return false
 }
 
 func (g *generator) buildFunction(name string, in, out *ast.FieldList, namer Namer) *jen.Statement {
@@ -337,13 +383,19 @@ func (g *generator) buildParams(params *ast.FieldList, namer Namer) []jen.Code {
 	for _, field := range params.List {
 		var param *jen.Statement
 		for _, fieldIdent := range field.Names {
+			fieldName := fieldIdent.Name
+			if fieldName == "" || fieldName == "_" {
+				if namer != nil {
+					fieldName = namer.New("")
+				}
+			}
 			if param == nil {
-				param = jen.Id(fieldIdent.Name)
+				param = jen.Id(fieldName)
 			} else {
-				param = param.Op(", ").Id(fieldIdent.Name)
+				param = param.Op(", ").Id(fieldName)
 			}
 		}
-		if param == nil { //anon param (probably return value)
+		if param == nil { //anon param (probably return value or _)
 			param = &jen.Statement{}
 			if namer != nil {
 				param.Id(namer.New(""))
