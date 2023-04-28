@@ -1,11 +1,38 @@
 # Gosingle
 
 gosingle generate module level singleton based on the chosen structure or interface (map slice or array defined as type also supported).
+
+## Note 
+It's mostly machine translation. Edits are welcome.
+
 ## Installation
 
 ```sh
 go get github.com/alh1m1k/gosingle
 ```
+
+## Short
+Generator utility to support specific package architecture
+
+```go
+package main
+
+import "github.com/me/somepackage"
+
+//default behavior
+somepackage.Dosome1()
+somepackage.Dosome2()
+
+custom := somepackage.New(customCfg...)
+
+//custom behavior
+custom.Dosome1()
+custom.Dosome2()
+```
+
+this architecture has the problem of having to duplicate the declaration of all public functions of the 
+```somepackage.New(customCfg...)``` instance at package context. It is the problem of generating similar proxy 
+functions that this generator is designed to solve.
 
 ## Usage
 
@@ -26,7 +53,7 @@ Composition member of field type may be excluded from inspect via tag ``` `singl
 
 Filename for output file has template ```<package>/<target>_singleton.go``` and can be changed via ```--suffix``` or ```--filepath```.
 
-File suffix ```_test.go``` and ```_singleton.go``` are excluded from analyze.
+File suffix ```_test.go``` and ```_singleton.go``` (value of ```--suffix``` flag)  are excluded from analyze.
 
 Path to source files a resolved via ```build.Default.Import(pkg, ".", build.FindOnly)``` be careful with path and naming
 
