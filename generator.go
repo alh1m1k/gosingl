@@ -19,16 +19,16 @@ type loaderCallback func(ctx context.Context, pkg, structure, comment string) er
 
 // generator will work on the selected structure of one file
 type generator struct {
-	defs     packageDefs
-	pkg      *types.Package
-	imports  []*ast.ImportSpec
-	path     string
-	cfg      Config
-	loader   loaderCallback
-	checker  Checker
-	internal bool //seted at runtime in do method
-	alice    string
-	output   *jen.File
+	defs                    packageDefs
+	pkg                     *types.Package
+	imports                 []*ast.ImportSpec
+	path                    string
+	cfg                     Config
+	loader                  loaderCallback
+	checker                 Checker
+	internal, interfaceWalk bool //seted at runtime in do method
+	deep                    int
+	output                  *jen.File
 }
 
 func newGenerator(imports []*ast.ImportSpec, cfg Config, loader loaderCallback, path string) *generator {
@@ -49,12 +49,6 @@ func (g *generator) BufferTo(output *jen.File) *generator {
 
 func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) (context.Context, error) {
 
-	var (
-		ok bool
-	)
-
-	//log.Println(g.path, target, len(targetMethods))
-
 	if target != nil {
 		switch target.Type.(type) {
 		case *ast.StructType:
@@ -69,17 +63,11 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	if g.output == nil {
 		g.output = bufferFrom(ctx, g.cfg)
 	}
+	//todo struct or bitmap
 	g.checker = chekerFrom(ctx)
-
-	if g.internal, ok = ctx.Value("_internal").(bool); !ok { //todo cross ref protection
-		g.internal = false
-		g.alice = g.cfg.Package
-	} else {
-		if g.alice, ok = ctx.Value("_alice").(string); !ok { //todo cross ref protection
-			g.alice = ""
-			log.Println("WARNING: internal generator call not supplied with package alice")
-		}
-	}
+	g.interfaceWalk = interfaceWalkFrom(ctx)
+	g.internal = internalFrom(ctx)
+	g.deep = deepFrom(ctx)
 
 	if len(strings.TrimSpace(g.cfg.Comment)) > 0 {
 		if g.internal {
@@ -97,7 +85,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	for i := range targetMethods {
 		switch method := targetMethods[i].(type) {
 		case *ast.FuncDecl:
-			if method.Name.IsExported() && g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, isInterfaceFrom(ctx), g.cfg) {
+			if method.Name.IsExported() && g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, g.interfaceWalk, g.cfg) {
 				g.wrapFunction(ctx, method.Name.Name, method.Type.Params, method.Type.Results, method.Doc.Text())
 				g.output.Line()
 			}
@@ -128,8 +116,11 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 				if g.isIgnored(field.Tag) {
 					continue
 				}
-				ctx = WithInterfaceWalk(ctx) //mark next branch as interface walk
-				// there is no exit from interface walk, as interface may compose only interfaces
+				if !g.interfaceWalk {
+					//mark next branch as interface walk
+					// there is no exit from interface walk, as interface may compose only interfaces
+					ctx = WithInterfaceWalk(ctx)
+				}
 				if err := g.digField(ctx, field, field.Type); err != nil {
 					if errors.Is(err, ParserWarning) {
 						log.Println(err)
@@ -149,7 +140,7 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 
 func (g *generator) declareVariable(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) (bool, context.Context) {
 
-	declared := isDeclaredFrom(ctx)
+	declared := declaredFrom(ctx)
 	if declared {
 		return declared, ctx
 	}
@@ -198,11 +189,12 @@ func (g *generator) WriteTo(writer io.Writer) error {
 	return nil
 }
 
+// scan target field
 func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Expr) error {
 	switch fieldTyped := inner.(type) {
 	case *ast.FuncType:
 		if len(field.Names) > 0 && field.Names[0].IsExported() {
-			if g.checker.Valid(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, isInterfaceFrom(ctx), g.cfg) {
+			if g.checker.Valid(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, g.interfaceWalk, g.cfg) {
 				g.wrapFunction(ctx, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
 				g.output.Line()
 			}
@@ -218,7 +210,13 @@ func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Ex
 	case *ast.Ident:
 		if len(field.Names) == 0 {
 			if fieldTyped.Obj != nil && fieldTyped.Obj.Kind == ast.Typ {
-				if _, ok := fieldTyped.Obj.Decl.(*ast.TypeSpec).Type.(*ast.StructType); ok {
+				switch fieldTyped.Obj.Decl.(*ast.TypeSpec).Type.(type) {
+				case *ast.StructType:
+					err := g.parsePackage(ctx, g.cfg.Package, fieldTyped.Name, fmt.Sprintf("<%s>", field.Type))
+					if err != nil {
+						return err
+					}
+				case *ast.InterfaceType:
 					err := g.parsePackage(ctx, g.cfg.Package, fieldTyped.Name, fmt.Sprintf("<%s>", field.Type))
 					if err != nil {
 						return err
@@ -251,6 +249,10 @@ func (g *generator) digExternalDecl(ctx context.Context, str *ast.SelectorExpr) 
 }
 
 func (g *generator) parsePackage(ctx context.Context, pkg, structure, comment string) error {
+	if !g.internal {
+		ctx = WithInternal(ctx)
+	}
+	ctx = WithIncDeep(ctx)
 	err := g.loader(ctx, pkg, structure, comment)
 	if err != nil {
 		return err
@@ -269,17 +271,18 @@ func (g *generator) isIgnored(tag *ast.BasicLit) bool {
 	return false
 }
 
+// wrap function of target to module level function
 func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.FieldList, comment string) {
 	if len(comment) > 0 {
 		g.output.Comment(comment)
 	}
-	namer := g.namerFrom(ctx) //refresh namer for every 1 level function
+	namer := namerFrom(ctx) //refresh namer for every 1 level function
 	fnBuilder := jen.Add(g.buildFunction(name, in, out, namer))
 	underFn := jen.Id(g.cfg.Variable)
-	if g.internal /*&& name == packageName(importCanon(g.cfg.Structure))*/ {
+	if g.internal && !g.interfaceWalk /*&& name == packageName(importCanon(g.cfg.Target))*/ { //!g.interfaceWalk dangerous collision may occur
 		//special case when inner func look like Instance.Signal() and Signal() is actually composition of Instance.Signal.Signal()
 		//or if Instance.Signal() is ambiguous with not exported composition
-		underFn.Dot(packageName(importCanon(g.cfg.Structure))).Dot(name)
+		underFn.Dot(packageName(importCanon(g.cfg.Target))).Dot(name)
 	} else {
 		underFn.Dot(name)
 	}
@@ -305,15 +308,6 @@ func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.
 		}
 	})
 	g.output.Add(fnBuilder)
-}
-
-func (g *generator) namerFrom(ctx context.Context) Namer {
-	if namer, ok := ctx.Value("namer").(Namer); !ok || namer == nil {
-		namer = newParameterNamer()
-		return namer
-	} else {
-		return namer.NewNamer()
-	}
 }
 
 func (g *generator) buildFunction(name string, in, out *ast.FieldList, namer Namer) *jen.Statement {
@@ -370,7 +364,7 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		if exp.Obj == nil && ISScalarType(exp.Name) { //it probably scalar // { //check Obj == nil is not enough
 			return root.Id(exp.Name)
 		} else if true { //local struct decl
-			return root.Qual(g.alice, exp.Name)
+			return root.Qual(g.cfg.Package, exp.Name)
 		} else { //for generics
 			log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format")
 		}
@@ -510,6 +504,15 @@ func tagToMap(lit *ast.BasicLit) map[string]string {
 	return result
 }
 
+func namerFrom(ctx context.Context) Namer {
+	if namer, ok := ctx.Value("namer").(Namer); !ok || namer == nil {
+		namer = newParameterNamer()
+		return namer
+	} else {
+		return namer.NewNamer()
+	}
+}
+
 func chekerFrom(ctx context.Context) Checker {
 	if checker, ok := ctx.Value("checker").(Checker); ok && checker != nil {
 		return checker
@@ -526,14 +529,28 @@ func bufferFrom(ctx context.Context, cfg Config) *jen.File {
 	return jen.NewFilePathName(cfg.Package, packageName(cfg.Package)) //must not be happened
 }
 
-func isInterfaceFrom(ctx context.Context) bool {
+func interfaceWalkFrom(ctx context.Context) bool {
 	if _markInterfaceWalk, ok := ctx.Value("_markInterfaceWalk").(bool); ok {
 		return _markInterfaceWalk
 	}
 	return false
 }
 
-func isDeclaredFrom(ctx context.Context) bool {
+func internalFrom(ctx context.Context) bool {
+	if _internal, ok := ctx.Value("_internal").(bool); ok {
+		return _internal
+	}
+	return false
+}
+
+func deepFrom(ctx context.Context) int {
+	if _deep, ok := ctx.Value("_deep").(int); ok {
+		return _deep
+	}
+	return 0
+}
+
+func declaredFrom(ctx context.Context) bool {
 	if _declared, ok := ctx.Value("_declared").(bool); ok {
 		return _declared
 	}
@@ -546,4 +563,14 @@ func WithInterfaceWalk(ctx context.Context) context.Context {
 
 func WithDeclared(ctx context.Context) context.Context {
 	return context.WithValue(ctx, "_declared", true)
+}
+
+func WithInternal(ctx context.Context) context.Context {
+	return context.WithValue(ctx, "_internal", true)
+}
+
+func WithIncDeep(ctx context.Context) context.Context {
+	deep := deepFrom(ctx)
+	deep++
+	return context.WithValue(ctx, "_deep", deep)
 }

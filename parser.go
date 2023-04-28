@@ -166,16 +166,14 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	for len(pending) > 0 && (untilEnd || turnsLeft > 0) {
 
 		pendingMux.Lock()
-		newTasks := make([]pendingParserReq, 0, len(pending))
+		newTasks := make([]pendingParserReq, len(pending))
 		copy(newTasks, pending)
 		pending = pending[0:0]
 		pendingMux.Unlock()
 
 		for _, task := range newTasks {
-			//log.Println(task.Package, task.Structure)
-			nCtx := context.WithValue(task.Context, "_internal", true)
-			nCtx = context.WithValue(nCtx, "_alice", task.Package)
-			if err = generate(nCtx, loader, task.Config); err != nil {
+			//log.Println(task.Package, task.Target)
+			if err = generate(task.Context, loader, task.Config); err != nil {
 				if !errors.Is(err, ProcessedError) {
 					log.Println(err)
 				}
@@ -228,11 +226,11 @@ func linearLoaderBuilder(buffer *jen.File, cfg Config) func(ctx context.Context,
 	var linearLoader loaderCallback
 	linearLoader = func(ctx context.Context, pkg, structure, comment string) error {
 		config := Config{
-			Deep:      0,
-			Package:   importCanon(pkg),
-			Variable:  cfg.Variable,
-			Structure: structure,
-			Comment:   comment,
+			Deep:     0,
+			Package:  importCanon(pkg),
+			Variable: cfg.Variable,
+			Target:   structure,
+			Comment:  comment,
 		}
 		pendingMux.Lock()
 		pending = append(pending, pendingParserReq{
@@ -251,11 +249,11 @@ func recursiveLoaderBuilder(buffer *jen.File, cfg Config) func(ctx context.Conte
 	var recursiveLoader loaderCallback
 	recursiveLoader = func(ctx context.Context, pkg, structure, comment string) error {
 		config := Config{
-			Deep:      0,
-			Package:   importCanon(pkg),
-			Variable:  cfg.Variable,
-			Structure: structure,
-			Comment:   comment,
+			Deep:     0,
+			Package:  importCanon(pkg),
+			Variable: cfg.Variable,
+			Target:   structure,
+			Comment:  comment,
 		}
 		return generate(ctx, recursiveLoader, config)
 	}
@@ -329,12 +327,12 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 		p.inited = true
 	}
 	for _, target := range records[cfg.Package].targets {
-		if target == cfg.Structure {
+		if target == cfg.Target {
 			p.Unlock()
 			return ProcessedError
 		}
 	}
-	records[cfg.Package].targets = append(records[cfg.Package].targets, cfg.Structure)
+	records[cfg.Package].targets = append(records[cfg.Package].targets, cfg.Target)
 	p.Unlock()
 
 	indexes := make([]string, 0, len(records[cfg.Package].files))
@@ -343,11 +341,10 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 	}
 	sort.Strings(indexes)
 	for _, file := range indexes {
-		sf := newStructFinder(cfg.Structure, cfg.Package)
+		sf := newStructFinder(cfg.Target, cfg.Package)
 		ast.Inspect(records[cfg.Package].files[file], sf.find)
 		//todo check if struct is exist in package
 		if sf.structure() != nil || len(sf.methods()) > 0 {
-			log.Println("declare", cfg.Package)
 			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].path)
 			if ctx, err = gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
 				log.Println(err)

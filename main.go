@@ -9,12 +9,12 @@ import (
 )
 
 type Config struct {
-	Deep      int
-	Package   string
-	Structure string
-	Variable  string
-	Comment   string
-	Write     bool
+	Deep     int
+	Package  string
+	Target   string
+	Variable string
+	Comment  string
+	Write    bool
 }
 
 func main() {
@@ -41,12 +41,12 @@ func main() {
 			time.Sleep(time.Second * time.Duration(*delay))
 		}
 		cfg := Config{
-			Deep:      *chosenDeep,
-			Package:   *chosenPackage,
-			Structure: *chosenStruct,
-			Variable:  *chosenVariable,
-			Comment:   *comment,
-			Write:     *write,
+			Deep:     *chosenDeep,
+			Package:  *chosenPackage,
+			Target:   *chosenStruct,
+			Variable: *chosenVariable,
+			Comment:  *comment,
+			Write:    *write,
 		}
 		ctx := context.Background()
 		ctx = SetupCtx(ctx, //as reference
