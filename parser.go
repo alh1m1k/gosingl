@@ -104,11 +104,11 @@ func SetupCtx(
 func ParsePackage(ctx context.Context, cfg Config) error {
 
 	var (
-		writer                    io.Writer
-		ok                        bool
-		resetFile                 *os.File
-		generated, totalGenerated []*wrappedFunctionDeclaration
-		err                       error
+		writer         io.Writer
+		ok             bool
+		resetFile      *os.File
+		totalGenerated []*wrappedFunctionDeclaration
+		err            error
 	)
 	mut.Lock()
 	records = make(loaderRecords)
@@ -146,10 +146,10 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 
 	// get the path of the package
 	if strings.TrimSpace(os.Getenv("GOPATH")) == "" {
-		log.Println("WARNING: OS ENV GOPATH NOT SET!")
+		info("WARNING: OS ENV GOPATH NOT SET!")
 	}
 	if strings.TrimSpace(os.Getenv("GOROOT")) == "" {
-		log.Println("WARNING: OS ENV GOROOT NOT SET!")
+		info("WARNING: OS ENV GOROOT NOT SET!")
 	}
 
 	buffer := jen.NewFilePathName(cfg.Package, packageName(cfg.Package))
@@ -176,17 +176,31 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	ctx = withPendingStatement(ctx, "var", varDeclPlaceholder)
 
 	cfg.Comment = fmt.Sprintf("<%s>", cfg.Target)
-	if ctx, generated, err = generate(ctx, loader, cfg); err != nil {
-		return err
-	}
-	if pendingStatementFrom(ctx, "var") != nil {
-		log.Println("WARNING: unable to determinate target variable type, left as default (Ref)")
-	}
-	totalGenerated = append(totalGenerated, generated...)
+	resultChanel := make(chan struct {
+		context.Context
+		Decl []*wrappedFunctionDeclaration
+		error
+	}, 10)
 
-	untilEnd := cfg.Deep == 0
-	turnsLeft := cfg.Deep
-	for len(pending) > 0 && (untilEnd || turnsLeft > 0) {
+	go generateRoutine(ctx, loader, resultChanel, cfg)
+
+	result := <-resultChanel
+
+	if result.error != nil {
+		//log.Println("die")
+		return result.error
+	}
+
+	if pendingStatementFrom(ctx, "var") != nil {
+		critical("WARNING: unable to determinate target variable type, left as default (Ref)")
+	}
+	totalGenerated = append(totalGenerated, result.Decl...)
+
+	//untilEnd := cfg.Deep == 0
+	//turnsLeft := cfg.Deep
+
+	undergoingTask := 0
+	for len(pending) > 0 /*&& (untilEnd || turnsLeft > 0)*/ {
 
 		pendingMux.Lock()
 		newTasks := make([]pendingParserReq, len(pending))
@@ -195,16 +209,31 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 		pendingMux.Unlock()
 
 		for _, task := range newTasks {
-			if ctx, generated, err = generate(task.Context, loader, task.Config); err != nil {
-				if !errors.Is(err, ProcessedError) {
-					log.Println(err)
-				}
-				continue
-			}
-			totalGenerated = append(totalGenerated, generated...)
+			//log.Println("run routine", task.Package, task.Target)
+			go generateRoutine(task.Context, loader, resultChanel, task.Config)
+			undergoingTask++
 		}
 
-		turnsLeft--
+	wait:
+		for {
+			select {
+			case result = <-resultChanel:
+				undergoingTask--
+				if result.error != nil {
+					if !errors.Is(err, ProcessedError) {
+						info(err)
+					}
+				}
+				totalGenerated = append(totalGenerated, result.Decl...)
+			default:
+				//todo is len atomic?
+				if len(pending) > 0 || undergoingTask == 0 {
+					break wait
+				}
+			}
+		}
+
+		//turnsLeft--
 	}
 
 	checker := chekerFrom(ctx, totalGenerated)
@@ -245,10 +274,10 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 
 	checkerErrors := checker.Invalid() //if it not in use it usually will be empty
 	if len(checkerErrors) > 0 {
-		log.Println("Followed checker errors appears while parsing package (probably duplication of declaration) it was dropped from output")
+		info("Followed checker errors appears while parsing package (probably duplication of declaration) it was dropped from output")
 	}
 	for _, fn := range checkerErrors {
-		log.Println(fn.Signature)
+		critical(fn.Signature)
 	}
 	return nil
 }
@@ -257,6 +286,7 @@ func linearLoaderBuilder(buffer *jen.File, cfg Config) func(ctx context.Context,
 
 	var linearLoader loaderCallback
 	linearLoader = func(ctx context.Context, pkg, structure, comment string) error {
+		//log.Println(pkg, structure)
 		config := Config{
 			Deep:     0,
 			Package:  importCanon(pkg),
@@ -298,6 +328,9 @@ func glue(output *jen.File, content []*wrappedFunctionDeclaration) {
 	var (
 		pkg, target string
 	)
+	sort.SliceStable(content, func(i, j int) bool {
+		return content[i].Package+"_"+content[i].Target < content[j].Package+"_"+content[j].Target
+	})
 	for _, fn := range content {
 		if pkg != fn.Package && target != fn.Target {
 			output.Line().Comment(fmt.Sprintf("%s from %s", strings.TrimSpace(fn.Comment), fn.Package)).Line()
@@ -395,7 +428,7 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) (context.C
 		if sf.structure() != nil || len(sf.methods()) > 0 {
 			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
 			if ctx, err = gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
-				log.Println(err)
+				info(err)
 				continue
 			}
 			generatedTotal = append(generatedTotal, gen.Result()...)
@@ -403,6 +436,83 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) (context.C
 	}
 
 	return ctx, generatedTotal, nil
+}
+
+func generateRoutine(ctx context.Context, loader loaderCallback, output chan<- struct {
+	context.Context
+	Decl []*wrappedFunctionDeclaration
+	error
+}, cfg Config) {
+	var (
+		p   *loaderRecord
+		ok  bool
+		err error
+	)
+
+	mut.Lock()
+	if p, ok = records[cfg.Package]; !ok {
+		p = &loaderRecord{
+			files:   nil,
+			targets: []string{},
+			path:    "",
+			inited:  false,
+			Mutex:   sync.Mutex{},
+		}
+		records[cfg.Package] = p
+	}
+	mut.Unlock()
+
+	p.Lock()
+	if !p.inited {
+		records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet, err = collectFiles(cfg.Package, blackListFrom(ctx))
+		if err != nil {
+			output <- struct {
+				context.Context
+				Decl []*wrappedFunctionDeclaration
+				error
+			}{Context: ctx, Decl: []*wrappedFunctionDeclaration{}, error: err}
+		}
+		//initPackage is @deprecated and will be removed in future
+		records[cfg.Package].Package, records[cfg.Package].packageDefs, err = initPackage(records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet)
+		p.inited = true
+	}
+	for _, target := range records[cfg.Package].targets {
+		if target == cfg.Target {
+			p.Unlock()
+			output <- struct {
+				context.Context
+				Decl []*wrappedFunctionDeclaration
+				error
+			}{Context: ctx, Decl: []*wrappedFunctionDeclaration{}, error: ProcessedError}
+		}
+	}
+	records[cfg.Package].targets = append(records[cfg.Package].targets, cfg.Target)
+	p.Unlock()
+
+	indexes := make([]string, 0, len(records[cfg.Package].files))
+	for path := range records[cfg.Package].files {
+		indexes = append(indexes, path)
+	}
+	sort.Strings(indexes)
+	generatedTotal := make([]*wrappedFunctionDeclaration, 0)
+	for _, file := range indexes {
+		sf := newStructFinder(cfg.Target, cfg.Package)
+		ast.Inspect(records[cfg.Package].files[file], sf.find)
+		if sf.structure() != nil || len(sf.methods()) > 0 {
+			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
+			if ctx, err = gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
+				info(err)
+				continue
+			}
+			generatedTotal = append(generatedTotal, gen.Result()...)
+		}
+	}
+
+	output <- struct {
+		context.Context
+		Decl []*wrappedFunctionDeclaration
+		error
+	}{Context: ctx, Decl: generatedTotal, error: nil}
 }
 
 func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*types.Package, packageDefs, error) {
@@ -427,7 +537,7 @@ func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*t
 	}
 
 	if errorsCnt > 0 {
-		log.Println("Warning: During parsing via config.Check number of errors appeared", errorsCnt)
+		info("Warning: During parsing via config.Check number of errors appeared", errorsCnt)
 	}
 
 	var err error
@@ -482,4 +592,16 @@ func chekerFrom(ctx context.Context, decl []*wrappedFunctionDeclaration) Checker
 		return checker
 	}
 	return newUniqueChecker2(decl) //must not be happened
+}
+
+func info(text ...any) {
+	log.Println(text...)
+}
+
+func critical(text any) {
+	log.Println(color(Yellow, fmt.Sprintf("%s", text)))
+}
+
+func stop(text any) {
+	log.Println(color(Red, fmt.Sprintf("%s", text)))
 }
