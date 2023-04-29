@@ -3,6 +3,8 @@ package arraySliceType
 
 var Instance _arraySlice_
 
+// <_arraySlice_> from github.com/alh1m1k/gosingl/test/arraySliceType
+
 func Proxy(p0 []<-chan int64) []chan<- int64 {
 	return Instance.Proxy(p0)
 }

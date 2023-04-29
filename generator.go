@@ -7,7 +7,6 @@ import (
 	"github.com/dave/jennifer/jen"
 	"go/ast"
 	"go/types"
-	"io"
 	"log"
 	"reflect"
 	"strings"
@@ -17,6 +16,14 @@ var ParserWarning = errors.New("WARNING:")
 
 type loaderCallback func(ctx context.Context, pkg, structure, comment string) error
 
+type wrappedFunctionDeclaration struct {
+	Name        string
+	Content     []*jen.Statement
+	IsInterface bool
+	Signature   types.Object
+	Config
+}
+
 // generator will work on the selected structure of one file
 type generator struct {
 	defs                    packageDefs
@@ -25,14 +32,14 @@ type generator struct {
 	path                    string
 	cfg                     Config
 	loader                  loaderCallback
-	checker                 Checker
 	internal, interfaceWalk bool //seted at runtime in do method
-	deep                    int
-	output                  *jen.File
+	deep, generated         int
+	output                  []*wrappedFunctionDeclaration
 }
 
-func newGenerator(imports []*ast.ImportSpec, cfg Config, loader loaderCallback, path string) *generator {
+func newGenerator(imports []*ast.ImportSpec, cfg Config, loader loaderCallback, defs packageDefs, path string) *generator {
 	return &generator{
+		defs:     defs,
 		imports:  imports,
 		path:     path,
 		cfg:      cfg,
@@ -42,9 +49,8 @@ func newGenerator(imports []*ast.ImportSpec, cfg Config, loader loaderCallback, 
 	}
 }
 
-func (g *generator) BufferTo(output *jen.File) *generator {
-	g.output = output
-	return g
+func (g *generator) Result() []*wrappedFunctionDeclaration {
+	return g.output
 }
 
 func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) (context.Context, error) {
@@ -70,30 +76,15 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		g.output = bufferFrom(ctx, g.cfg)
 	}
 	//todo struct or bitmap
-	g.checker = chekerFrom(ctx)
 	g.interfaceWalk = interfaceWalkFrom(ctx)
 	g.internal = internalFrom(ctx)
 	g.deep = deepFrom(ctx)
 
-	if len(strings.TrimSpace(g.cfg.Comment)) > 0 {
-		if g.internal {
-			g.output.Line()
-			g.output.Comment(fmt.Sprintf("%s from %s", strings.TrimSpace(g.cfg.Comment), g.path))
-			g.output.Line()
-		} else {
-			g.output.PackageComment(strings.TrimSpace(g.cfg.Comment))
-			g.output.Line()
-		}
-	}
-
-	_, ctx = g.declareVariable(ctx, target, targetMethods)
-
 	for i := range targetMethods {
 		switch method := targetMethods[i].(type) {
 		case *ast.FuncDecl:
-			if method.Name.IsExported() && g.checker.Valid(method.Name.Name, method.Type.Params, method.Type.Results, g.interfaceWalk, g.cfg) {
-				g.wrapFunction(ctx, method.Name.Name, method.Type.Params, method.Type.Results, method.Doc.Text())
-				g.output.Line()
+			if method.Name.IsExported() /*&& g.checker.Check(method.Name.Name, method.Type.Params, method.Type.Results, g.interfaceWalk, g.cfg)*/ {
+				g.output = append(g.output, g.wrapFunction(ctx, method.Name, method.Type.Params, method.Type.Results, method.Doc.Text()))
 			}
 		default:
 			log.Println("ubnormal value in targetMethods", reflect.ValueOf(targetMethods[i]).String())
@@ -147,34 +138,34 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		}
 	}
 
+	if !g.internal && g.generated > 0 {
+		if pendingStatement := pendingStatementFrom(ctx, "var"); pendingStatement != nil {
+			//todo pending callback list visitor type i.e. pendings(ctx, generator, cfg)
+			if g.completeVariableDecl(pendingStatement, target, targetMethods, g.cfg) {
+				ctx = withPendingStatement(ctx, "var", nil)
+			}
+		}
+	}
+
 	return ctx, nil
 }
 
-func (g *generator) declareVariable(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) (bool, context.Context) {
-
-	declared := declaredFrom(ctx)
-	if declared {
-		return declared, ctx
-	}
+func (g *generator) completeVariableDecl(variableDecl *jen.Statement, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config) bool {
 
 	if target != nil {
 		switch target.Type.(type) {
 		case *ast.InterfaceType:
-			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
-			ctx = WithDeclared(ctx)
-			return true, ctx
+			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
+			return true
 		case *ast.MapType:
-			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
-			ctx = WithDeclared(ctx)
-			return true, ctx
+			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
+			return true
 		case *ast.ArrayType:
-			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
-			ctx = WithDeclared(ctx)
-			return true, ctx
+			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
+			return true
 		case *ast.SliceExpr:
-			g.output.Var().Id(g.cfg.Variable).Id(target.Name.Name).Line()
-			ctx = WithDeclared(ctx)
-			return true, ctx
+			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
+			return true
 		}
 	}
 
@@ -184,13 +175,11 @@ func (g *generator) declareVariable(ctx context.Context, target *ast.TypeSpec, t
 			if method.Name.IsExported() {
 				switch mType := method.Recv.List[0].Type.(type) {
 				case *ast.StarExpr: //mb [T]
-					g.output.Var().Id(g.cfg.Variable).Op("*").Id(mType.X.(*ast.Ident).Name).Line()
-					ctx = WithDeclared(ctx)
-					return true, ctx
+					resetStatement(variableDecl).Var().Id(cfg.Variable).Op("*").Id(mType.X.(*ast.Ident).Name).Line()
+					return true
 				case *ast.Ident:
-					g.output.Var().Id(g.cfg.Variable).Id(mType.Name).Line()
-					ctx = WithDeclared(ctx)
-					return true, ctx
+					resetStatement(variableDecl).Var().Id(cfg.Variable).Id(mType.Name).Line()
+					return true
 				default:
 					log.Println("wrong declaration attempt")
 				}
@@ -198,20 +187,7 @@ func (g *generator) declareVariable(ctx context.Context, target *ast.TypeSpec, t
 		}
 	}
 
-	//special case fail to declare, set placeholder
-
-	g.output.Var().Id(g.cfg.Variable).Op("*").Id(g.cfg.Target).Line()
-	ctx = WithDeclared(ctx)
-	return true, ctx
-
-	//return false, ctx
-}
-
-func (g *generator) WriteTo(writer io.Writer) error {
-	if g.output != nil {
-		return g.output.Render(writer)
-	}
-	return nil
+	return false
 }
 
 // scan target field
@@ -219,11 +195,11 @@ func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Ex
 	switch fieldTyped := inner.(type) {
 	case *ast.FuncType:
 		if len(field.Names) > 0 && field.Names[0].IsExported() {
-			if g.checker.Valid(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, g.interfaceWalk, g.cfg) {
-				g.wrapFunction(ctx, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
-				g.output.Line()
-			}
+			//if g.checker.Check(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, g.interfaceWalk, g.cfg) {
+			//g.wrapFunction(ctx, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
+			g.output = append(g.output, g.wrapFunction(ctx, field.Names[0], fieldTyped.Params, fieldTyped.Results, field.Doc.Text()))
 		}
+		//}
 	case *ast.StarExpr:
 		g.digField(ctx, field, fieldTyped.X) //keep *
 	case *ast.SelectorExpr:
@@ -296,20 +272,29 @@ func (g *generator) isIgnored(tag *ast.BasicLit) bool {
 	return false
 }
 
-// wrap function of target to module level function
-func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.FieldList, comment string) {
-	if len(comment) > 0 {
-		g.output.Comment(comment)
+func (g *generator) wrapFunction(ctx context.Context, ident *ast.Ident, in, out *ast.FieldList, comment string) *wrappedFunctionDeclaration {
+
+	decl := &wrappedFunctionDeclaration{
+		Name:        ident.Name,
+		Content:     make([]*jen.Statement, 0),
+		IsInterface: false,
+		Signature:   nil,
+		Config:      g.cfg,
 	}
+
+	if len(comment) > 0 {
+		decl.Content = append(decl.Content, jen.Comment(comment))
+	}
+
 	namer := namerFrom(ctx) //refresh namer for every 1 level function
-	fnBuilder := jen.Add(g.buildFunction(name, in, out, namer))
+	fnBuilder := jen.Add(g.buildFunction(ident.Name, in, out, namer, false))
 	underFn := jen.Id(g.cfg.Variable)
 	if g.internal && !g.interfaceWalk /*&& name == packageName(importCanon(g.cfg.Target))*/ { //!g.interfaceWalk dangerous collision may occur
 		//special case when inner func look like Instance.Signal() and Signal() is actually composition of Instance.Signal.Signal()
 		//or if Instance.Signal() is ambiguous with not exported composition
-		underFn.Dot(packageName(importCanon(g.cfg.Target))).Dot(name)
+		underFn.Dot(packageName(importCanon(g.cfg.Target))).Dot(ident.Name)
 	} else {
-		underFn.Dot(name)
+		underFn.Dot(ident.Name)
 	}
 	underFn.CallFunc(func(group *jen.Group) {
 		names := namer.Values()
@@ -335,7 +320,14 @@ func (g *generator) wrapFunction(ctx context.Context, name string, in, out *ast.
 			grp.Add(underFn)
 		}
 	})
-	g.output.Add(fnBuilder)
+
+	g.generated++
+
+	decl.Content = append(decl.Content, fnBuilder)
+	decl.IsInterface = interfaceWalkFrom(ctx)
+	decl.Signature = g.defs[ident]
+
+	return decl
 }
 
 func (g *generator) addFnParam(fnGroup *jen.Group, field *ast.Field, name string) {
@@ -356,43 +348,45 @@ func (g *generator) isAnonIdent(ident *ast.Ident) bool {
 	return false
 }
 
-func (g *generator) buildFunction(name string, in, out *ast.FieldList, namer Namer) *jen.Statement {
+func (g *generator) buildFunction(name string, in, out *ast.FieldList, namer Namer, buildSignature bool) *jen.Statement {
 	fnBuilder := jen.Func()
 	if len(name) > 0 {
 		fnBuilder.Id(name)
 	}
 	if in.NumFields() > 0 {
-		fnBuilder.Params(g.buildParams(in, namer)...)
+		fnBuilder.Params(g.buildParams(in, namer, buildSignature)...)
 	} else {
 		fnBuilder.Op("()")
 	}
 	outFieldsCnt := out.NumFields()
 	if out != nil && out.NumFields() > 0 {
 		if outFieldsCnt == 1 && out.List[0].Names == nil { // (named type) as ret value must be in bracket too
-			fnBuilder.List(g.buildParams(out, nil)...)
+			fnBuilder.List(g.buildParams(out, nil, buildSignature)...)
 		} else {
-			fnBuilder.Params(g.buildParams(out, nil)...)
+			fnBuilder.Params(g.buildParams(out, nil, buildSignature)...)
 		}
 	}
 
 	return fnBuilder
 }
 
-func (g *generator) buildParams(params *ast.FieldList, namer Namer) []jen.Code {
+func (g *generator) buildParams(params *ast.FieldList, namer Namer, buildSignature bool) []jen.Code {
 	var result []jen.Code
 	for _, field := range params.List {
 		var param *jen.Statement
-		for _, fieldIdent := range field.Names {
-			fieldName := fieldIdent.Name
-			if fieldName == "" || fieldName == "_" {
-				if namer != nil {
-					fieldName = namer.New("")
+		if !buildSignature {
+			for _, fieldIdent := range field.Names {
+				fieldName := fieldIdent.Name
+				if fieldName == "" || fieldName == "_" {
+					if namer != nil {
+						fieldName = namer.New("")
+					}
 				}
-			}
-			if param == nil {
-				param = jen.Id(fieldName)
-			} else {
-				param = param.Op(", ").Id(fieldName)
+				if param == nil {
+					param = jen.Id(fieldName)
+				} else {
+					param = param.Op(", ").Id(fieldName)
+				}
 			}
 		}
 		if param == nil { //anon param (probably return value or _)
@@ -445,7 +439,7 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 			for _, m := range exp.Methods.List {
 				if method, ok := m.Type.(*ast.FuncType); ok {
 					//shift (remove) func keyword from func abc()
-					group.Add(exprShift(g.buildFunction(m.Names[0].Name, method.Params, method.Results, nil)))
+					group.Add(shiftStatement(g.buildFunction(m.Names[0].Name, method.Params, method.Results, nil, false)))
 				} else {
 					group.Add(g.recursBuildParam(m.Type, &jen.Statement{}))
 				}
@@ -471,7 +465,7 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 					fldState = fldState.Id(fName.Name).Op(",")
 				}
 				if len(f.Names) > 0 { //mb len(*fldState)
-					fldState = exprPop(fldState) //skip last ,
+					fldState = popStatement(fldState) //skip last ,
 				}
 				statement := g.recursBuildParam(f.Type, fldState)
 				if f.Tag != nil {
@@ -482,7 +476,7 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		})
 	case *ast.FuncType:
 		//todo recursive naming resolution
-		root.Add(g.buildFunction("", exp.Params, exp.Results, nil))
+		root.Add(g.buildFunction("", exp.Params, exp.Results, nil, false))
 	case *ast.BasicLit:
 		root.Id(exp.Value)
 	case *ast.BadExpr:
@@ -519,22 +513,29 @@ func packageName(packagePath string) string {
 	return slice[len(slice)-1]
 }
 
-func exprPop(exp *jen.Statement) *jen.Statement {
+func popStatement(exp *jen.Statement) *jen.Statement {
 	proxy := *exp
 	if len(proxy) <= 0 {
 		return nil
 	}
-	proxy = proxy[0 : len(proxy)-1]
-	return &proxy
+	*exp = proxy[0 : len(proxy)-1]
+	return exp
 }
 
-func exprShift(exp *jen.Statement) *jen.Statement {
+func shiftStatement(exp *jen.Statement) *jen.Statement {
 	proxy := *exp
 	if len(proxy) <= 0 {
 		return nil
 	}
-	proxy = proxy[1:]
-	return &proxy
+	*exp = proxy[1:]
+	return exp
+}
+
+func resetStatement(statement *jen.Statement) *jen.Statement {
+	underlying := *statement
+	underlying = underlying[0:0]
+	*statement = underlying
+	return statement
 }
 
 func tagToMap(lit *ast.BasicLit) map[string]string {
@@ -565,20 +566,11 @@ func namerFrom(ctx context.Context) Namer {
 	}
 }
 
-func chekerFrom(ctx context.Context) Checker {
-	if checker, ok := ctx.Value("checker").(Checker); ok && checker != nil {
-		return checker
-	}
-	//log.Println("new checker")
-	return newUniqueChecker() //must not be happened
-}
-
-func bufferFrom(ctx context.Context, cfg Config) *jen.File {
-	if buffer, ok := ctx.Value("buffer").(*jen.File); ok && buffer != nil {
+func bufferFrom(ctx context.Context, cfg Config) []*wrappedFunctionDeclaration {
+	if buffer, ok := ctx.Value("buffer").([]*wrappedFunctionDeclaration); ok && buffer != nil {
 		return buffer
 	}
-	//log.Println("new buffer")
-	return jen.NewFilePathName(cfg.Package, packageName(cfg.Package)) //must not be happened
+	return []*wrappedFunctionDeclaration{}
 }
 
 func interfaceWalkFrom(ctx context.Context) bool {
@@ -602,19 +594,8 @@ func deepFrom(ctx context.Context) int {
 	return 0
 }
 
-func declaredFrom(ctx context.Context) bool {
-	if _declared, ok := ctx.Value("_declared").(bool); ok {
-		return _declared
-	}
-	return false
-}
-
 func WithInterfaceWalk(ctx context.Context) context.Context {
 	return context.WithValue(ctx, "_markInterfaceWalk", true)
-}
-
-func WithDeclared(ctx context.Context) context.Context {
-	return context.WithValue(ctx, "_declared", true)
 }
 
 func WithInternal(ctx context.Context) context.Context {

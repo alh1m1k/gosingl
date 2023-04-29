@@ -8,6 +8,8 @@ import (
 
 var cbInstance CallbackType
 
+// <CallbackType> from github.com/alh1m1k/gosingl/test/callbackType
+
 func Empty() {
 	cbInstance.Empty()
 }
@@ -30,7 +32,7 @@ func PublicFunction(uintptr2 uintptr) error {
 	return cbInstance.PublicFunction(uintptr2)
 }
 
-// <fmt.Stringer> from /usr/local/go/src/fmt
+// <fmt.Stringer> from fmt
 
 func String() string {
 	return cbInstance.Stringer.String()

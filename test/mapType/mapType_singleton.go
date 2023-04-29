@@ -3,6 +3,8 @@ package mapType
 
 var Instance *mapType
 
+// <mapType> from github.com/alh1m1k/gosingl/test/mapType
+
 func MapSimple(any2 any, bool2 bool, c int32, d map[string]string, g *string) (string, error) {
 	return Instance.MapSimple(any2, bool2, c, d, g)
 }

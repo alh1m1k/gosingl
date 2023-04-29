@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/dave/jennifer/jen"
 	"go/ast"
 	"go/build"
@@ -37,6 +38,7 @@ type pendingParserReq struct {
 	Config
 	context.Context
 }
+
 type packageDefs map[*ast.Ident]types.Object
 
 var (
@@ -102,10 +104,11 @@ func SetupCtx(
 func ParsePackage(ctx context.Context, cfg Config) error {
 
 	var (
-		writer    io.Writer
-		ok        bool
-		resetFile *os.File
-		err       error
+		writer                    io.Writer
+		ok                        bool
+		resetFile                 *os.File
+		generated, totalGenerated []*wrappedFunctionDeclaration
+		err                       error
 	)
 	mut.Lock()
 	records = make(loaderRecords)
@@ -119,6 +122,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	cfg.Variable = strings.TrimSpace(cfg.Variable)
 	cfg.Suffix = strings.TrimSpace(cfg.Suffix)
 	cfg.Path = strings.TrimSpace(cfg.Path)
+	cfg.Comment = strings.TrimSpace(cfg.Comment)
 
 	if len(cfg.Package) == 0 {
 		return errors.New("no directory submitted")
@@ -152,21 +156,33 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	//loader := recursiveLoaderBuilder(buffer, cfg)
 	loader := linearLoaderBuilder(buffer, cfg)
 
-	checker := newUniqueChecker()
-	/*	ctx = context.WithValue(ctx, "_internal", false)    //reset in rare case of context reuse
-		ctx = context.WithValue(ctx, "_alice", cfg.Package) //reset in rare case of context reuse*/
 	ctx = SetupCtx(ctx,
 		nil,
 		buffer,
 		newParameterNamer(),
-		checker,
+		nil,
 		[]string{"_test.go", cfg.Suffix}, //todo merge
 		true,                             //it sets as default
 	)
 
-	if err = generate(ctx, loader, cfg); err != nil {
+	if len(cfg.Comment) > 0 {
+		buffer.PackageComment(strings.TrimSpace(cfg.Comment))
+		buffer.Line()
+	}
+
+	//variable placeholder will be updated later
+	varDeclPlaceholder := buffer.Var()
+	varDeclPlaceholder.Id(cfg.Variable).Op("*").Id(cfg.Target).Line() //default
+	ctx = withPendingStatement(ctx, "var", varDeclPlaceholder)
+
+	cfg.Comment = fmt.Sprintf("<%s>", cfg.Target)
+	if ctx, generated, err = generate(ctx, loader, cfg); err != nil {
 		return err
 	}
+	if pendingStatementFrom(ctx, "var") != nil {
+		log.Println("WARNING: unable to determinate target variable type, left as default (Ref)")
+	}
+	totalGenerated = append(totalGenerated, generated...)
 
 	untilEnd := cfg.Deep == 0
 	turnsLeft := cfg.Deep
@@ -179,17 +195,20 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 		pendingMux.Unlock()
 
 		for _, task := range newTasks {
-			//log.Println(task.Package, task.Target)
-			if err = generate(task.Context, loader, task.Config); err != nil {
+			if ctx, generated, err = generate(task.Context, loader, task.Config); err != nil {
 				if !errors.Is(err, ProcessedError) {
 					log.Println(err)
 				}
 				continue
 			}
+			totalGenerated = append(totalGenerated, generated...)
 		}
 
 		turnsLeft--
 	}
+
+	checker := chekerFrom(ctx, totalGenerated)
+	glue(buffer, checker.Valid())
 
 	if writer, ok = ctx.Value("writer").(io.Writer); writer == nil || !ok {
 		if !cfg.Write {
@@ -204,7 +223,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 					panic(err)
 				}
 				//resetFilePath = p.Dir + "/" + packageName(importCanon(cfg.Package)) + cfg.Suffix
-				resetFilePath = p.Dir + "/" + cfg.Target + cfg.Suffix
+				resetFilePath = p.Dir + "/" + strings.ToLower(cfg.Target[0:1]) + cfg.Target[1:] + cfg.Suffix
 			} else {
 				resetFilePath = cfg.Path
 			}
@@ -224,12 +243,12 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 		log.Println(err)
 	}
 
-	checkerErrors := checker.Errors() //if it not in use it usually will be empty
+	checkerErrors := checker.Invalid() //if it not in use it usually will be empty
 	if len(checkerErrors) > 0 {
-		log.Println("Followed checker errors appears while parsing package (probably duplication of declaration) it was skipped")
+		log.Println("Followed checker errors appears while parsing package (probably duplication of declaration) it was dropped from output")
 	}
-	for _, err := range checkerErrors {
-		log.Println(err)
+	for _, fn := range checkerErrors {
+		log.Println(fn.Signature)
 	}
 	return nil
 }
@@ -268,10 +287,27 @@ func recursiveLoaderBuilder(buffer *jen.File, cfg Config) func(ctx context.Conte
 			Target:   structure,
 			Comment:  comment,
 		}
-		return generate(ctx, recursiveLoader, config)
+		_, _, err := generate(ctx, recursiveLoader, config) //break context chain
+		return err
 	}
 
 	return recursiveLoader
+}
+
+func glue(output *jen.File, content []*wrappedFunctionDeclaration) {
+	var (
+		pkg, target string
+	)
+	for _, fn := range content {
+		if pkg != fn.Package && target != fn.Target {
+			output.Line().Comment(fmt.Sprintf("%s from %s", strings.TrimSpace(fn.Comment), fn.Package)).Line()
+			pkg, target = fn.Package, fn.Target
+		}
+		for _, statement := range fn.Content {
+			output.Add(statement)
+			output.Line()
+		}
+	}
 }
 
 func collectFiles(pkg string, blacklist []string) (path string, files map[string]*ast.File, fileSet *token.FileSet, err error) {
@@ -308,7 +344,7 @@ func collectFiles(pkg string, blacklist []string) (path string, files map[string
 	return path, files, fileSet, nil
 }
 
-func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
+func generate(ctx context.Context, loader loaderCallback, cfg Config) (context.Context, []*wrappedFunctionDeclaration, error) {
 	var (
 		p   *loaderRecord
 		ok  bool
@@ -318,13 +354,11 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 	mut.Lock()
 	if p, ok = records[cfg.Package]; !ok {
 		p = &loaderRecord{
-			Package:     nil,
-			packageDefs: nil,
-			files:       nil,
-			targets:     []string{},
-			path:        "",
-			inited:      false,
-			Mutex:       sync.Mutex{},
+			files:   nil,
+			targets: []string{},
+			path:    "",
+			inited:  false,
+			Mutex:   sync.Mutex{},
 		}
 		records[cfg.Package] = p
 	}
@@ -334,7 +368,7 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 	if !p.inited {
 		records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet, err = collectFiles(cfg.Package, blackListFrom(ctx))
 		if err != nil {
-			return err
+			return ctx, []*wrappedFunctionDeclaration{}, err
 		}
 		//initPackage is @deprecated and will be removed in future
 		records[cfg.Package].Package, records[cfg.Package].packageDefs, err = initPackage(records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet)
@@ -343,7 +377,7 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 	for _, target := range records[cfg.Package].targets {
 		if target == cfg.Target {
 			p.Unlock()
-			return ProcessedError
+			return ctx, []*wrappedFunctionDeclaration{}, ProcessedError
 		}
 	}
 	records[cfg.Package].targets = append(records[cfg.Package].targets, cfg.Target)
@@ -354,20 +388,21 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) error {
 		indexes = append(indexes, path)
 	}
 	sort.Strings(indexes)
+	generatedTotal := make([]*wrappedFunctionDeclaration, 0)
 	for _, file := range indexes {
 		sf := newStructFinder(cfg.Target, cfg.Package)
 		ast.Inspect(records[cfg.Package].files[file], sf.find)
-		//todo check if struct is exist in package
 		if sf.structure() != nil || len(sf.methods()) > 0 {
-			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].path)
+			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
 			if ctx, err = gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
 				log.Println(err)
 				continue
 			}
+			generatedTotal = append(generatedTotal, gen.Result()...)
 		}
 	}
 
-	return nil
+	return ctx, generatedTotal, nil
 }
 
 func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*types.Package, packageDefs, error) {
@@ -381,7 +416,19 @@ func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*t
 		Defs: defs,
 	}
 
-	config := types.Config{Importer: importer.Default(), FakeImportC: true}
+	errorsCnt := 0
+	config := types.Config{
+		FakeImportC: true,
+		Error: func(err error) {
+			errorsCnt++
+			//log.Println(err)
+		},
+		Importer: importer.Default(),
+	}
+
+	if errorsCnt > 0 {
+		log.Println("Warning: During parsing via config.Check number of errors appeared", errorsCnt)
+	}
 
 	var err error
 
@@ -392,7 +439,7 @@ func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*t
 		//return err
 	}
 
-	return pkg, defs, nil
+	return pkg, packageDefs(defs), nil
 }
 
 func isBlackListed(f string, blacklist []string) bool {
@@ -417,4 +464,22 @@ func mapToSlice[Key comparable, Value any](from map[Key]Value) []Value {
 		to = append(to, from[i])
 	}
 	return to
+}
+
+func pendingStatementFrom(ctx context.Context, name string) *jen.Statement {
+	if _statement, ok := ctx.Value(fmt.Sprintf("_pending:%s", name)).(*jen.Statement); ok {
+		return _statement
+	}
+	return nil
+}
+
+func withPendingStatement(ctx context.Context, name string, statement *jen.Statement) context.Context {
+	return context.WithValue(ctx, fmt.Sprintf("_pending:%s", name), statement)
+}
+
+func chekerFrom(ctx context.Context, decl []*wrappedFunctionDeclaration) Checker {
+	if checker, ok := ctx.Value("checker").(Checker); ok && checker != nil {
+		return checker
+	}
+	return newUniqueChecker2(decl) //must not be happened
 }

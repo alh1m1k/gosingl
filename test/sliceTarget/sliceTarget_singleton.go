@@ -5,6 +5,8 @@ import "unsafe"
 
 var Instance sliceTarget
 
+// <sliceTarget> from github.com/alh1m1k/gosingl/test/sliceTarget
+
 func Showed(pointer unsafe.Pointer, p0 func(_, _, _ float32), a, p1, c bool) error {
 	return Instance.Showed(pointer, p0, a, p1, c)
 }

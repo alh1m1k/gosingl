@@ -12,11 +12,7 @@ import (
 
 var Instance *composition
 
-// <fmt.State> from /usr/local/go/src/fmt
-
-func Write(b []byte) (n int, err error) {
-	return Instance.State.Write(b)
-}
+// <fmt.State> from fmt
 
 func Width() (wid int, ok bool) {
 	return Instance.State.Width()
@@ -30,7 +26,7 @@ func Flag(c int) bool {
 	return Instance.State.Flag(c)
 }
 
-// <os.Signal> from /usr/local/go/src/os
+// <os.Signal> from os
 
 func String() string {
 	return Instance.Signal.String()
@@ -40,7 +36,7 @@ func Signal() {
 	Instance.Signal.Signal()
 }
 
-// <http.Client> from /usr/local/go/src/net/http
+// <http.Client> from net/http
 
 func Get(url string) (resp *http.Response, err error) {
 	return Instance.Client.Get(url)
@@ -69,8 +65,6 @@ func CloseIdleConnections() {
 func CheckRedirect(req *http.Request, via []*http.Request) error {
 	return Instance.Client.CheckRedirect(req, via)
 }
-
-// <http.Server> from /usr/local/go/src/net/http
 
 func Close() error {
 	return Instance.Server.Close()
@@ -116,8 +110,6 @@ func ConnContext(ctx context.Context, c net.Conn) context.Context {
 	return Instance.Server.ConnContext(ctx, c)
 }
 
-// <http.Response> from /usr/local/go/src/net/http
-
 func Cookies() []*http.Cookie {
 	return Instance.Response.Cookies()
 }
@@ -130,7 +122,7 @@ func ProtoAtLeast(major, minor int) bool {
 	return Instance.Response.ProtoAtLeast(major, minor)
 }
 
-// <crypto.Decrypter> from /usr/local/go/src/crypto
+// <crypto.Decrypter> from crypto
 
 func Public() crypto.PublicKey {
 	return Instance.Decrypter.Public()

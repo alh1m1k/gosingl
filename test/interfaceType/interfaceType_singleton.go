@@ -8,6 +8,8 @@ import (
 
 var Instance interfaceType
 
+// <interfaceType> from github.com/alh1m1k/gosingl/test/interfaceType
+
 func InterfaceEmpty(any2 any, bool2 bool, c int32, d interface{}, g *string) (string, error) {
 	return Instance.InterfaceEmpty(any2, bool2, c, d, g)
 }
@@ -44,15 +46,11 @@ func InterfaceMethodsDeepAndCallback(any2 any, bool2 bool, c callback, d interfa
 	return Instance.InterfaceMethodsDeepAndCallback(any2, bool2, c, d, g)
 }
 
-// <io.ReadWriter> from /usr/local/go/src/io
-
-// <Reader> from /usr/local/go/src/io
+// <Reader> from io
 
 func Read(p []byte) (n int, err error) {
 	return Instance.Read(p)
 }
-
-// <Writer> from /usr/local/go/src/io
 
 func Write(p []byte) (n int, err error) {
 	return Instance.Write(p)

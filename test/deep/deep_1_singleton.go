@@ -3,14 +3,12 @@ package deep
 
 var Instance *deep
 
+// <deep> from github.com/alh1m1k/gosingl/test/deep
+
 func T0() error {
 	return Instance.T0()
 }
 
-// <il1> from /home/alhimik/go/src/github.com/alh1m1k/gosingl/test/deep
-
 func Ilvl1() error {
 	return Instance.il1.Ilvl1()
 }
-
-// <tl1> from /home/alhimik/go/src/github.com/alh1m1k/gosingl/test/deep

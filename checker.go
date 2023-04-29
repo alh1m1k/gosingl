@@ -2,8 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
-	"go/ast"
+	"go/types"
 	"sync"
 )
 
@@ -11,87 +10,101 @@ var SignatureError = errors.New("wrong signature")
 var AmbiguousError = errors.New("ambiguous")
 
 type Checker interface {
-	Valid(name string, in, out *ast.FieldList, isInterface bool, cfg Config) bool
-	Reset()
-	NewChecker() Checker
-	Errors() []error
-}
-
-type uniqueCheckerRecord struct {
-	name        string
-	in, out     *ast.FieldList
-	isInterface bool //interface not collide with interface or other rcv
+	Check(target *wrappedFunctionDeclaration) bool
+	Valid() []*wrappedFunctionDeclaration
+	Invalid() []*wrappedFunctionDeclaration
+	NewChecker([]*wrappedFunctionDeclaration) Checker
 }
 
 type uniqueChecker struct {
 	sync.Mutex
-	index  []uniqueCheckerRecord
-	errors map[error]int
+	index, invalid, implemented []*wrappedFunctionDeclaration
+	errors                      map[error]int
 }
 
-func (u *uniqueChecker) Valid(name string, in, out *ast.FieldList, isInterface bool, cfg Config) bool {
-	//todo opt lock
+func (u *uniqueChecker) Check(target *wrappedFunctionDeclaration) bool {
+	u.Lock()
+	defer u.Unlock()
 	for i := range u.index {
-		if u.index[i].name == name {
-			u.Lock()
-			u.analyze(name, in, out, isInterface, &u.index[i])
-			u.Unlock()
-			return false
+		if u.index[i] == target {
+			return true
 		}
 	}
-	u.Lock()
-	defer u.Unlock()
-	u.index = append(u.index, struct {
-		name        string
-		in, out     *ast.FieldList
-		isInterface bool
-	}{name: name, in: in, out: out, isInterface: isInterface})
-	return true
+	return false
 }
 
-func (u *uniqueChecker) Reset() {
+func (u *uniqueChecker) Valid() []*wrappedFunctionDeclaration {
 	u.Lock()
 	defer u.Unlock()
-	u.index = u.index[0:0]
+	return u.index
+}
+
+func (u *uniqueChecker) Invalid() []*wrappedFunctionDeclaration {
+	u.Lock()
+	defer u.Unlock()
+	return u.invalid
+}
+
+func (u *uniqueChecker) NewChecker(total []*wrappedFunctionDeclaration) Checker {
+	return newUniqueChecker2(total)
+}
+
+func (u *uniqueChecker) run() {
+	u.Lock()
+	defer u.Unlock()
+	u.reset()
+	output := make([]*wrappedFunctionDeclaration, 0)
+start:
+	for i := range u.index {
+		for j := range u.index {
+			if i == j || u.index[i] == nil || u.index[j] == nil {
+				continue
+			}
+			if u.index[i].Name == u.index[j].Name {
+				if u.analyze(u.index[i], u.index[j]) {
+					if u.index[i].IsInterface {
+						u.implemented = append(u.implemented, u.index[i])
+						u.index[i] = nil //interface has been implemented
+						continue start
+					}
+				} else {
+					u.invalid = append(u.invalid, u.index[i])
+					continue start
+				}
+			}
+		}
+		output = append(output, u.index[i])
+	}
+	u.index = output
+	//log.Println("ending filter ", len(u.index), len(u.invalid))
+}
+
+func (u *uniqueChecker) reset() {
 	u.errors = map[error]int{}
 }
 
-func (u *uniqueChecker) Errors() []error {
-	result := make([]error, 0, len(u.errors))
-	for err, cnt := range u.errors {
-		result = append(result, fmt.Errorf("%w %d times", err, cnt))
+func (u *uniqueChecker) analyze(target, record *wrappedFunctionDeclaration) bool {
+
+	if target.IsInterface || record.IsInterface {
+		return types.Identical(target.Signature.Type(), record.Signature.Type())
 	}
-	return result
+
+	//err = fmt.Errorf("func %s was %w", name, AmbiguousError)
+	//err = fmt.Errorf("func %s has entrys with %w", name, SignatureError)
+
+	/*	if cnt, ok := u.errors[err]; !ok {
+			u.errors[err] = 1
+		} else {
+			u.errors[err] = cnt + 1
+		}*/
+
+	return false
 }
 
-func (u *uniqueChecker) NewChecker() Checker {
-	return newUniqueChecker()
-}
-
-func (u *uniqueChecker) analyze(name string, in, out *ast.FieldList, isInterface bool, record *uniqueCheckerRecord) {
-	var (
-		err error
-	)
-	if in.NumFields() == record.in.NumFields() || out.NumFields() == record.out.NumFields() {
-		safe := isInterface || record.isInterface
-		record.isInterface = record.isInterface && isInterface //reset if no
-		if safe {
-			return
-		}
-		err = fmt.Errorf("func %s was %w", name, AmbiguousError)
-
-	} else {
-		err = fmt.Errorf("func %s has entrys with %w", name, SignatureError)
+func newUniqueChecker2(total []*wrappedFunctionDeclaration) Checker {
+	c := &uniqueChecker{
+		index: total,
 	}
-	if cnt, ok := u.errors[err]; !ok {
-		u.errors[err] = 1
-	} else {
-		u.errors[err] = cnt + 1
-	}
-}
-
-func newUniqueChecker() Checker {
-	c := &uniqueChecker{}
-	c.Reset()
+	c.run()
 	return c
 }

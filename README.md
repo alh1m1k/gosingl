@@ -193,5 +193,5 @@ in most cases.
 - [x] tags (ignore)
 - [x] test coverage & testing
 - [x] ambiguous function detector
-- [ ] later variable decl
+- [x] later variable decl
 - [ ] drop custom cli
