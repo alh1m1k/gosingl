@@ -32,6 +32,7 @@ type generator struct {
 	path                    string
 	cfg                     Config
 	loader                  loaderCallback
+	resolver                Resolver
 	internal, interfaceWalk bool //seted at runtime in do method
 	deep, generated         int
 	output                  []*wrappedFunctionDeclaration
@@ -75,6 +76,11 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	if g.output == nil {
 		g.output = bufferFrom(ctx, g.cfg)
 	}
+
+	//chaining resolvers
+	g.resolver = resolverFrom(ctx).NewResolver()
+	ctx = withResolver(ctx, g.resolver)
+
 	//todo struct or bitmap
 	g.interfaceWalk = interfaceWalkFrom(ctx)
 	g.internal = internalFrom(ctx)
@@ -138,24 +144,13 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 	}
 
 	if !g.internal && g.generated > 0 {
-		if pendingStatement := pendingStatementFrom(ctx, "var"); pendingStatement != nil {
-			//todo pending callback list visitor type i.e. pendings(ctx, generator, cfg)
-			if g.completeVariableDecl(pendingStatement, target, targetMethods, g.cfg) {
-				ctx = withPendingStatement(ctx, "var", nil)
-			}
+		delayed := pendingStatementFrom(ctx)
+		for _, d := range delayed {
+			d.Do(ctx, target, targetMethods)
 		}
 	}
 
 	return ctx, nil
-}
-
-func (g *generator) completeVariableDecl(variableDecl *jen.Statement, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config) bool {
-	//todo move away
-	if completeVariableDecl(variableDecl, target, targetMethods, cfg) {
-		resolveGenerics(variableDecl, cfg)
-		return true
-	}
-	return false
 }
 
 // scan target field
@@ -385,13 +380,14 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 	case *ast.StarExpr:
 		g.recursBuildParam(exp.X, root.Op("*"))
 	case *ast.Ident:
-		if exp.Obj == nil && ISScalarType(exp.Name) { //it probably scalar // { //check Obj == nil is not enough
-			return root.Id(exp.Name)
-		} else if true { //local struct decl
-			return root.Qual(g.cfg.Package, exp.Name)
-		} else { //for generics
-			log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format")
-		}
+		return root.Add(g.resolver.Resolve(exp, g.cfg.Package, g.defs[exp]))
+		/*		if exp.Obj == nil && ISScalarType(exp.Name) { //it probably scalar // { //check Obj == nil is not enough
+					return root.Id(exp.Name)
+				} else if true { //local struct decl
+					return root.Qual(g.cfg.Package, exp.Name)
+				} else { //for generics
+					log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format")
+				}*/
 	case *ast.Ellipsis:
 		g.recursBuildParam(exp.Elt, root.Op("..."))
 	case *ast.ArrayType:

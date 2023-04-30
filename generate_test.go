@@ -25,6 +25,7 @@ import (
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/sliceTarget sliceTarget
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/interfaceValidation interfaceValidationValid1
 //go:generate ./gosingl -w github.com/alh1m1k/gosingl/test/interfaceValidation interfaceValidationInvalid1
+//go:generate  ./gosingl -w --variable "g[int, bool]" github.com/alh1m1k/gosingl/test/generics generics
 
 func TestInterface(t *testing.T) {
 	ctx := context.Background()

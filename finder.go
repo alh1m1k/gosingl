@@ -70,7 +70,7 @@ func (s *structFinder) recursiveResolveRcv(n ast.Node, t ast.Expr) {
 	case *ast.IndexListExpr:
 		s.recursiveResolveRcv(n, exp.X)
 	default:
-		critical(fmt.Sprintf("WARNING: abnormal func rcv: %t", n.(*ast.FuncDecl).Recv.List[0].Type))
+		critical(fmt.Sprintf("WARNING: abnormal func rcv: %typ", n.(*ast.FuncDecl).Recv.List[0].Type))
 	}
 }
 

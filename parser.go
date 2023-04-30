@@ -27,7 +27,8 @@ var (
 type vType uint
 
 const (
-	Real vType = iota
+	Auto vType = iota
+	Real
 	Ref
 )
 
@@ -135,7 +136,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 
 	cfg.Package = strings.TrimSpace(cfg.Package)
 	cfg.Target = strings.TrimSpace(cfg.Target)
-	cfg.Variable = clearVarFromDeclaration(strings.TrimSpace(cfg.Variable))
+	cfg.Variable = strings.TrimSpace(cfg.Variable)
 	cfg.Suffix = strings.TrimSpace(cfg.Suffix)
 	cfg.Path = strings.TrimSpace(cfg.Path)
 	cfg.Comment = strings.TrimSpace(cfg.Comment)
@@ -174,6 +175,9 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	//loader := recursiveLoaderBuilder(buffer, cfg)
 	loader := linearLoaderBuilder(buffer, cfg)
 
+	varDecl := NewVariableDeclFromConfig(cfg)
+	cfg.Variable = clearVarFromDeclaration(cfg.Variable)
+
 	ctx = SetupCtx(ctx,
 		nil,
 		buffer,
@@ -189,12 +193,9 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	}
 
 	//variable placeholder will be updated later
-	//todo simplify&refactor
-	varDeclPlaceholder := buffer.Var()
-	varDeclPlaceholder.Id(clearVarFromDeclaration(cfg.Variable)).Op("*").Qual(cfg.Package, cfg.Target) //default
-	resolveGenerics(varDeclPlaceholder, cfg)
-	varDeclPlaceholder.Line()
-	ctx = withPendingStatement(ctx, "var", varDeclPlaceholder)
+	buffer.Var().Add(varDecl.Declare())
+	ctx = withPending(ctx, []Delayed{varDecl})
+	ctx = withResolver(ctx, varDecl.rootResolver)
 
 	cfg.Comment = fmt.Sprintf("<%s>", cfg.Target)
 	resultChanel := make(chan struct {
@@ -213,9 +214,6 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	}
 	ctx = result.Context
 
-	if pendingStatementFrom(ctx, "var") != nil {
-		caution("WARNING: unable to determinate target variable type, left as default (Ref)")
-	}
 	totalGenerated = append(totalGenerated, result.Decl...)
 
 	//generate dep tree packages begin
@@ -269,6 +267,8 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 
 	checker := chekerFrom(ctx).NewChecker(totalGenerated)
 	glue(buffer, checker.Valid(), cfg)
+
+	varDecl.CompleteResolve() //resolve all pending decl
 
 	writer, done, fail, err := setupOutput(ctx, cfg)
 
@@ -617,82 +617,6 @@ func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*t
 	return pkg, packageDefs(defs), nil
 }
 
-func completeVariableDecl(variableDecl *jen.Statement, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config) bool {
-
-	//todo move away
-	if strings.Index(cfg.Variable, "*") == 0 {
-		//real mode
-		resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Id(target.Name.Name)
-	} else if strings.Index(cfg.Variable, "&") == 0 {
-		//ref mode
-		resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Op("*").Id(target.Name.Name)
-	} else {
-		//auto
-		if target != nil {
-			switch target.Type.(type) {
-			case *ast.InterfaceType:
-				resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Id(target.Name.Name)
-				return true
-			case *ast.MapType:
-				resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Id(target.Name.Name)
-				return true
-			case *ast.ArrayType:
-				resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Id(target.Name.Name)
-				return true
-			case *ast.SliceExpr:
-				resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Id(target.Name.Name)
-				return true
-			}
-		}
-
-		for i := range targetMethods {
-			switch method := targetMethods[i].(type) {
-			case *ast.FuncDecl:
-				if method.Name.IsExported() {
-					switch mType := method.Recv.List[0].Type.(type) {
-					case *ast.StarExpr: //mb [T]
-						resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Op("*").Id(mType.X.(*ast.Ident).Name)
-						return true
-					case *ast.Ident:
-						resetStatement(variableDecl).Var().Id(clearVarFromDeclaration(cfg.Variable)).Id(mType.Name)
-						return true
-					default:
-						log.Println("wrong declaration attempt")
-					}
-				}
-			}
-		}
-	}
-
-	return false
-}
-
-// todo refactor
-func resolveGenerics(variableDecl *jen.Statement, cfg Config) bool {
-	start, end := strings.Index(cfg.Variable, "["), strings.Index(cfg.Variable, "]")
-	if start < 0 || end < 0 || end-start <= 1 {
-		return false
-	}
-	parts := strings.Split(cfg.Variable[start+1:end], ",")
-	variableDecl.TypesFunc(func(group *jen.Group) {
-		for _, part := range parts {
-			if strings.Contains(part, ".") {
-				qual := strings.Split(part, ".")
-				if len(qual) == 2 {
-					group.Add(jen.Qual(qual[0], qual[1]))
-				} else {
-					critical(fmt.Sprintf("WARNING: probably incorrect generic resolve %s", part))
-					group.Add(jen.Id(part))
-				}
-			} else {
-				group.Add(jen.Id(part))
-			}
-		}
-	})
-
-	return true
-}
-
 // todo refactor
 func clearVarFromDeclaration(string2 string) string {
 	string2 = strings.Replace(strings.Replace(string2, "*", "", 1), "&", "", 1)
@@ -727,15 +651,26 @@ func mapToSlice[Key comparable, Value any](from map[Key]Value) []Value {
 	return to
 }
 
-func pendingStatementFrom(ctx context.Context, name string) *jen.Statement {
-	if _statement, ok := ctx.Value(fmt.Sprintf("_pending:%s", name)).(*jen.Statement); ok {
+func pendingStatementFrom(ctx context.Context) []Delayed {
+	if _statement, ok := ctx.Value("_delayed").([]Delayed); ok {
 		return _statement
 	}
 	return nil
 }
 
-func withPendingStatement(ctx context.Context, name string, statement *jen.Statement) context.Context {
-	return context.WithValue(ctx, fmt.Sprintf("_pending:%s", name), statement)
+func resolverFrom(ctx context.Context) Resolver {
+	if _statement, ok := ctx.Value("_resolver").(Resolver); ok {
+		return _statement
+	}
+	return nil
+}
+
+func withPending(ctx context.Context, delayed []Delayed) context.Context {
+	return context.WithValue(ctx, "_delayed", delayed)
+}
+
+func withResolver(ctx context.Context, resolver Resolver) context.Context {
+	return context.WithValue(ctx, "_resolver", resolver)
 }
 
 func chekerFrom(ctx context.Context) Checker {
