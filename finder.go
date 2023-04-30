@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"strings"
 )
@@ -37,27 +38,40 @@ func (s *structFinder) find(n ast.Node) bool {
 				s.s = lookedFor
 			case *ast.InterfaceType:
 				s.s = lookedFor
+			case *ast.SliceExpr:
+				s.s = lookedFor
+			case *ast.ArrayType:
+				s.s = lookedFor
+			case *ast.MapType:
+				s.s = lookedFor
 			}
 		}
 	case *ast.FuncDecl:
 		if lookedFor.Recv == nil {
 			return false
 		}
-		switch exp := lookedFor.Recv.List[0].Type.(type) {
-		case *ast.StarExpr:
-			if exp.X.(*ast.Ident).Name == s.name {
-				s.m = append(s.m, n)
-			}
-		case *ast.Ident:
-			if exp.Name == s.name {
-				s.m = append(s.m, n)
-			}
-		}
+		s.recursiveResolveRcv(lookedFor, lookedFor.Recv.List[0].Type)
 	default:
+
 		return true
 	}
 
 	return false
+}
+
+func (s *structFinder) recursiveResolveRcv(n ast.Node, t ast.Expr) {
+	switch exp := t.(type) {
+	case *ast.StarExpr:
+		s.recursiveResolveRcv(n, exp.X)
+	case *ast.Ident:
+		if exp.Name == s.name {
+			s.m = append(s.m, n)
+		}
+	case *ast.IndexListExpr:
+		s.recursiveResolveRcv(n, exp.X)
+	default:
+		critical(fmt.Sprintf("WARNING: abnormal func rcv: %t", n.(*ast.FuncDecl).Recv.List[0].Type))
+	}
 }
 
 func (s *structFinder) structure() *ast.TypeSpec {

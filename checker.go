@@ -46,7 +46,7 @@ func (u *uniqueChecker) Invalid() []*wrappedFunctionDeclaration {
 }
 
 func (u *uniqueChecker) NewChecker(total []*wrappedFunctionDeclaration) Checker {
-	return newUniqueChecker2(total)
+	return newUniqueChecker(total)
 }
 
 func (u *uniqueChecker) run() {
@@ -86,6 +86,10 @@ func (u *uniqueChecker) reset() {
 func (u *uniqueChecker) analyze(target, record *wrappedFunctionDeclaration) bool {
 
 	if target.IsInterface || record.IsInterface {
+		if target.Signature == nil || record.Signature == nil {
+			critical("WARNING: not enough data to analyze the signature (is env set correctly?)")
+			return false
+		}
 		return types.Identical(target.Signature.Type(), record.Signature.Type())
 	}
 
@@ -101,7 +105,7 @@ func (u *uniqueChecker) analyze(target, record *wrappedFunctionDeclaration) bool
 	return false
 }
 
-func newUniqueChecker2(total []*wrappedFunctionDeclaration) Checker {
+func newUniqueChecker(total []*wrappedFunctionDeclaration) Checker {
 	c := &uniqueChecker{
 		index: total,
 	}

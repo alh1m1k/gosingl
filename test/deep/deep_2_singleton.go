@@ -12,7 +12,3 @@ func T0() error {
 func Ilvl1() error {
 	return Instance.il1.Ilvl1()
 }
-
-func Ilvl2() error {
-	return Instance.Ilvl2()
-}

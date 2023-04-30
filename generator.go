@@ -14,7 +14,7 @@ import (
 
 var ParserWarning = errors.New("WARNING:")
 
-type loaderCallback func(ctx context.Context, pkg, structure, comment string) error
+type loaderCallback func(ctx context.Context, cfg Config) error
 
 type wrappedFunctionDeclaration struct {
 	Name        string
@@ -95,7 +95,6 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		switch structure := target.Type.(type) {
 		case *ast.StructType:
 			for _, field := range structure.Fields.List {
-				//log.Println(field.Names)
 				if g.isIgnored(field.Tag) {
 					continue
 				}
@@ -151,42 +150,11 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 }
 
 func (g *generator) completeVariableDecl(variableDecl *jen.Statement, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config) bool {
-
-	if target != nil {
-		switch target.Type.(type) {
-		case *ast.InterfaceType:
-			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
-			return true
-		case *ast.MapType:
-			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
-			return true
-		case *ast.ArrayType:
-			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
-			return true
-		case *ast.SliceExpr:
-			resetStatement(variableDecl).Var().Id(cfg.Variable).Id(target.Name.Name).Line()
-			return true
-		}
+	//todo move away
+	if completeVariableDecl(variableDecl, target, targetMethods, cfg) {
+		resolveGenerics(variableDecl, cfg)
+		return true
 	}
-
-	for i := range targetMethods {
-		switch method := targetMethods[i].(type) {
-		case *ast.FuncDecl:
-			if method.Name.IsExported() {
-				switch mType := method.Recv.List[0].Type.(type) {
-				case *ast.StarExpr: //mb [T]
-					resetStatement(variableDecl).Var().Id(cfg.Variable).Op("*").Id(mType.X.(*ast.Ident).Name).Line()
-					return true
-				case *ast.Ident:
-					resetStatement(variableDecl).Var().Id(cfg.Variable).Id(mType.Name).Line()
-					return true
-				default:
-					log.Println("wrong declaration attempt")
-				}
-			}
-		}
-	}
-
 	return false
 }
 
@@ -254,7 +222,17 @@ func (g *generator) parsePackage(ctx context.Context, pkg, structure, comment st
 		ctx = WithInternal(ctx)
 	}
 	ctx = WithIncDeep(ctx)
-	err := g.loader(ctx, pkg, structure, comment)
+	cfg := g.cfg
+
+	if g.cfg.Deep > 0 {
+		cfg.Deep--
+	}
+
+	cfg.Package = importCanon(pkg)
+	cfg.Target = structure
+	cfg.Comment = comment
+
+	err := g.loader(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -286,7 +264,7 @@ func (g *generator) wrapFunction(ctx context.Context, ident *ast.Ident, in, out 
 		decl.Content = append(decl.Content, jen.Comment(comment))
 	}
 
-	namer := namerFrom(ctx) //refresh namer for every 1 level function
+	namer := namerFrom(ctx).NewNamer() //refresh namer for every 1 level function
 	fnBuilder := jen.Add(g.buildFunction(ident.Name, in, out, namer, false))
 	underFn := jen.Id(g.cfg.Variable)
 	if g.internal && !g.interfaceWalk /*&& name == packageName(importCanon(g.cfg.Target))*/ { //!g.interfaceWalk dangerous collision may occur
@@ -562,7 +540,7 @@ func namerFrom(ctx context.Context) Namer {
 		namer = newParameterNamer()
 		return namer
 	} else {
-		return namer.NewNamer()
+		return namer
 	}
 }
 

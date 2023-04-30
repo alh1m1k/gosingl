@@ -8,7 +8,3 @@ var Instance *deep
 func T0() error {
 	return Instance.T0()
 }
-
-func Ilvl1() error {
-	return Instance.il1.Ilvl1()
-}
