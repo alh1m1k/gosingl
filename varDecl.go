@@ -202,7 +202,7 @@ func resolveGenerics2(cfg Config) []string {
 	}
 	result := strings.Split(cfg.Variable[start+1:end], ",")
 	for i := range result {
-		result[i] = strings.TrimSpace(result[i])
+		result[i] = strings.Replace(strings.TrimSpace(result[i]), "&", "*", 1)
 	}
 	return result
 }

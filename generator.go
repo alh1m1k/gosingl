@@ -419,14 +419,11 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 	case *ast.StarExpr:
 		g.recursBuildParam(exp.X, root.Op("*"))
 	case *ast.Ident:
-		return root.Add(g.resolver.Resolve(exp, g.cfg.Package, g.defs[exp]))
-		/*		if exp.Obj == nil && ISScalarType(exp.Name) { //it probably scalar // { //check Obj == nil is not enough
-					return parent.Id(exp.Name)
-				} else if true { //local struct decl
-					return parent.Qual(g.cfg.Package, exp.Name)
-				} else { //for generics
-					log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format")
-				}*/
+		if ISScalarType(exp.Name) { //any definitely scalar are set in place others will be resolve after parsing is complete
+			return root.Id(exp.Name)
+		} else {
+			root.Add(g.resolver.Resolve(exp, g.cfg.Package, g.defs[exp]))
+		}
 	case *ast.Ellipsis:
 		g.recursBuildParam(exp.Elt, root.Op("..."))
 	case *ast.ArrayType:
