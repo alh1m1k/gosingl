@@ -53,24 +53,13 @@ func (v *VariableDecl) Do(ctx context.Context, target *ast.TypeSpec, targetMetho
 			} else {
 				rslMap := resolveMap{resolve: map[string]string{}, index: []string{}}
 				total := 0
-				maxLen := len(v.resolved)
-
 				for i := range target.TypeParams.List {
 					for _, ident := range target.TypeParams.List[i].Names {
-						if total >= maxLen {
-							total++
-							continue
-						}
 						rslMap.index = append(rslMap.index, ident.Name)
-						rslMap.resolve[ident.Name] = v.resolved[total] //if v.Target != cfg.Target this line doesn't make sense.
-						//it will be recalculated later in proper context
 						total++
 					}
 				}
 				v.generics[struct{ Pkg, Target string }{Pkg: cfg.Package, Target: cfg.Target}] = rslMap
-				if total != len(v.resolved) {
-					critical(fmt.Sprintf("%s target generics count mismatch", target.Name))
-				}
 			}
 		}
 	}
@@ -80,6 +69,15 @@ func (v *VariableDecl) CompleteResolve() {
 	v.update()
 	wait := &sync.WaitGroup{}
 	wait.Add(1)
+	if len(v.resolved) > 0 {
+		genericsRoot := v.generics[struct{ Pkg, Target string }{Pkg: v.Package, Target: v.Target}]
+		if len(genericsRoot.index) != len(v.resolved) {
+			critical(fmt.Sprintf("%s target generics count mismatch %d:%d", v.Target, len(genericsRoot.index), len(v.resolved)))
+		}
+		for i := range genericsRoot.index {
+			genericsRoot.resolve[genericsRoot.index[i]] = v.resolved[i]
+		}
+	}
 	go v.rootResolver.CompleteResolve(v.generics[struct{ Pkg, Target string }{Pkg: v.Package, Target: v.Target}], v.generics, wait) //todo only if need
 	wait.Wait()
 }
@@ -99,17 +97,27 @@ func (v *VariableDecl) updateVType(target *ast.TypeSpec, targetMethods []ast.Nod
 		}
 	}
 
+	var resolveVType func(exp ast.Expr) vType
+	resolveVType = func(exp ast.Expr) vType {
+		switch newT := exp.(type) {
+		case *ast.StarExpr: //mb [T]
+			return Ref
+		case *ast.Ident:
+			return Real
+		case *ast.IndexListExpr:
+			return resolveVType(newT.X)
+		default:
+			log.Println("wrong declaration attempt")
+		}
+		return Auto
+	}
+
 	for i := range targetMethods {
 		switch method := targetMethods[i].(type) {
 		case *ast.FuncDecl:
 			if method.Name.IsExported() {
-				switch method.Recv.List[0].Type.(type) {
-				case *ast.StarExpr: //mb [T]
-					return Ref
-				case *ast.Ident:
-					return Real
-				default:
-					log.Println("wrong declaration attempt")
+				if rsl := resolveVType(method.Recv.List[0].Type); rsl != Auto {
+					return rsl
 				}
 			}
 		}
@@ -130,17 +138,27 @@ func (v *VariableDecl) update() {
 	}
 	if len(v.resolved) > 0 {
 		v.instance.TypesFunc(func(group *jen.Group) {
-			for _, part := range v.resolved {
-				if strings.Contains(part, ".") {
-					qual := strings.Split(part, ".")
+			for _, resolve := range v.resolved {
+				var (
+					statement *jen.Statement = &jen.Statement{}
+				)
+				if strings.Index(resolve, "*") == 0 {
+					statement.Op("*")
+					if len(resolve) > 1 {
+						resolve = strings.TrimSpace(resolve[1:]) //drop symbol *
+					}
+				}
+				if strings.Contains(resolve, ".") {
+					qual := strings.Split(resolve, ".")
 					if len(qual) == 2 {
-						group.Add(jen.Qual(qual[0], qual[1]))
+						qual[0], qual[1] = strings.TrimSpace(qual[0]), strings.TrimSpace(qual[1])
+						group.Add(statement.Qual(qual[0], qual[1]))
 					} else {
-						critical(fmt.Sprintf("WARNING: probably incorrect generic resolve %s", part))
-						group.Add(jen.Id(part))
+						critical(fmt.Sprintf("WARNING: probably incorrect generic resolve %s", resolve))
+						group.Add(statement.Id(resolve))
 					}
 				} else {
-					group.Add(jen.Id(part))
+					group.Add(statement.Id(resolve))
 				}
 			}
 		})
@@ -182,5 +200,9 @@ func resolveGenerics2(cfg Config) []string {
 	if start < 0 || end < 0 || end-start <= 1 {
 		return []string{}
 	}
-	return strings.Split(cfg.Variable[start+1:end], ",")
+	result := strings.Split(cfg.Variable[start+1:end], ",")
+	for i := range result {
+		result[i] = strings.TrimSpace(result[i])
+	}
+	return result
 }

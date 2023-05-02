@@ -35,14 +35,14 @@ type Resolver interface {
 type genericResolver struct {
 	pkg, target       string
 	overlap           []string
-	pending           []pendingResolve
+	pending           []*pendingResolve
 	underlineResolver []Resolver
 	parent            Resolver
 }
 
 func (r *genericResolver) Resolve(ident *ast.Ident, pkg string, object types.Object) *jen.Statement {
 	statement := jen.Id(ident.Name)
-	r.pending = append(r.pending, pendingResolve{
+	r.pending = append(r.pending, &pendingResolve{
 		ident: ident,
 		pkg:   pkg,
 		o:     object,
@@ -84,17 +84,17 @@ func (r *genericResolver) CompleteResolve(rslMap resolveMap, allMaps mapResolveM
 			if len(original.index) != len(r.overlap) {
 				critical(fmt.Sprintf("type and impl are missmathed %s, %s", r.pkg, r.target))
 			}
-			for i, org := range original.index {
+			for i := range original.index {
 				if i < len(r.overlap) {
-					merge.resolve[org] = r.overlap[i]
+					merge.resolve[original.index[i]] = r.overlap[i]
 				} else {
-					merge.resolve[org] = org
+					merge.resolve[original.index[i]] = original.index[i]
 				}
 				merge.index = append(merge.index, r.overlap[i])
 			}
 			for i, org := range merge.resolve {
-				if overrided, ok := rslMap.resolve[org]; ok {
-					merge.resolve[i] = overrided
+				if override, ok := rslMap.resolve[org]; ok {
+					merge.resolve[i] = override
 				}
 			}
 		} else {
