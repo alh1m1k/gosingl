@@ -8,3 +8,11 @@ var g *generics[int, bool]
 func Typed(a int, b bool) {
 	g.Typed(a, b)
 }
+
+func InnerTyped(a int) {
+	g.innerGenerics.InnerTyped(a)
+}
+
+func OverlapTyped(a float32) {
+	g.overlapGenerics.OverlapTyped(a)
+}

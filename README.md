@@ -183,10 +183,7 @@ The two main dependencies are :
 
 
 # TODO
-Checker must be improved to better handle function collision (check function signature instead of parameters count),
-that is needed to distinguish between a collision with an interface and with another composition method, as behavior is quite different.
-Singleton variable decl must be delayed until first method appear to determinate rcv type (pointer or value). Currently not 100% accurate, but works 
-in most cases.
+better generic handling, testing
 
 
 - [x] composition

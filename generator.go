@@ -24,29 +24,27 @@ type wrappedFunctionDeclaration struct {
 	Config
 }
 
-// generator will work on the selected structure of one file
+// generator will work on the selected Structure of one file
 type generator struct {
-	defs                    packageDefs
-	pkg                     *types.Package
-	imports                 []*ast.ImportSpec
-	path                    string
-	cfg                     Config
-	loader                  loaderCallback
-	resolver                Resolver
-	internal, interfaceWalk bool //seted at runtime in do method
-	deep, generated         int
-	output                  []*wrappedFunctionDeclaration
+	defs            packageDefs
+	pkg             *types.Package
+	imports         []*ast.ImportSpec
+	path            string
+	cfg             Config
+	loader          loaderCallback
+	resolver        Resolver
+	deep, generated int
+	output          []*wrappedFunctionDeclaration
 }
 
 func newGenerator(imports []*ast.ImportSpec, cfg Config, loader loaderCallback, defs packageDefs, path string) *generator {
 	return &generator{
-		defs:     defs,
-		imports:  imports,
-		path:     path,
-		cfg:      cfg,
-		loader:   loader,
-		internal: false,
-		output:   nil,
+		defs:    defs,
+		imports: imports,
+		path:    path,
+		cfg:     cfg,
+		loader:  loader,
+		output:  nil,
 	}
 }
 
@@ -79,11 +77,8 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 
 	//chaining resolvers
 	g.resolver = resolverFrom(ctx).NewResolver()
-	ctx = withResolver(ctx, g.resolver)
 
 	//todo struct or bitmap
-	g.interfaceWalk = interfaceWalkFrom(ctx)
-	g.internal = internalFrom(ctx)
 	g.deep = deepFrom(ctx)
 
 	for i := range targetMethods {
@@ -114,14 +109,10 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 				}
 			}
 		case *ast.InterfaceType:
+			ctx = withInterfaceWalk(ctx)
 			for _, field := range structure.Methods.List {
 				if g.isIgnored(field.Tag) {
 					continue
-				}
-				if !g.interfaceWalk {
-					//mark next branch as interface walk
-					// there is no exit from interface walk, as interface may compose only interfaces
-					ctx = WithInterfaceWalk(ctx)
 				}
 				if err := g.digField(ctx, field, field.Type); err != nil {
 					if errors.Is(err, ParserWarning) {
@@ -143,12 +134,12 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 		}
 	}
 
-	if !g.internal && g.generated > 0 {
-		delayed := pendingStatementFrom(ctx)
-		for _, d := range delayed {
-			d.Do(ctx, target, targetMethods)
-		}
+	delayed := pendingStatementFrom(ctx)
+	for _, d := range delayed {
+		d.Do(ctx, target, targetMethods, g.cfg)
 	}
+
+	ctx = withCallPrefix(ctx, []string{}) //call complete, reset prefix
 
 	return ctx, nil
 }
@@ -157,22 +148,31 @@ func (g *generator) Do(ctx context.Context, target *ast.TypeSpec, targetMethods 
 func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Expr) error {
 	switch fieldTyped := inner.(type) {
 	case *ast.FuncType:
-		if len(field.Names) > 0 && field.Names[0].IsExported() {
-			//if g.checker.Check(field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, g.interfaceWalk, g.cfg) {
-			//g.wrapFunction(ctx, field.Names[0].Name, fieldTyped.Params, fieldTyped.Results, field.Doc.Text())
-			g.output = append(g.output, g.wrapFunction(ctx, field.Names[0], fieldTyped.Params, fieldTyped.Results, field.Doc.Text()))
+		for i := range field.Names {
+			if field.Names[i].IsExported() && len(field.Names[i].Name) > 0 {
+				g.output = append(g.output, g.wrapFunction(ctx, field.Names[i], fieldTyped.Params, fieldTyped.Results, field.Doc.Text()))
+			}
 		}
-		//}
 	case *ast.StarExpr:
 		g.digField(ctx, field, fieldTyped.X) //keep *
 	case *ast.SelectorExpr:
 		if len(field.Names) == 0 {
+			//this !interfaceWalkFrom ... withCallPrefix
+			//setup callPrefix as current non interface type or root interface type
+			//in interfaceWalk
+			if !interfaceWalkFrom(ctx) {
+				ctx = withCallPrefix(ctx, append(callPrefixFrom(ctx), fieldTyped.Sel.Name))
+			}
 			if err := g.digExternalDecl(ctx, fieldTyped); err != nil {
 				return err
 			}
 		}
 	case *ast.Ident:
 		if len(field.Names) == 0 {
+			//todo check with map[ident]decl
+			if !interfaceWalkFrom(ctx) {
+				ctx = withCallPrefix(ctx, append(callPrefixFrom(ctx), fieldTyped.Name))
+			}
 			if fieldTyped.Obj != nil && fieldTyped.Obj.Kind == ast.Typ {
 				switch fieldTyped.Obj.Decl.(*ast.TypeSpec).Type.(type) {
 				case *ast.StructType:
@@ -181,15 +181,54 @@ func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Ex
 						return err
 					}
 				case *ast.InterfaceType:
+					ctx = withInterfaceWalk(ctx)
 					err := g.parsePackage(ctx, g.cfg.Package, fieldTyped.Name, fmt.Sprintf("<%s>", field.Type))
 					if err != nil {
+						return err
+					}
+					//todo inline interface decl
+				}
+			}
+		}
+	case *ast.InterfaceType:
+		if len(field.Names) == 0 {
+			ctx = withInterfaceWalk(ctx)
+			for _, field := range fieldTyped.Methods.List {
+				if g.isIgnored(field.Tag) {
+					continue
+				}
+				if err := g.digField(ctx, field, field.Type); err != nil {
+					if errors.Is(err, ParserWarning) {
+						info(err)
+						continue
+					} else {
+						//interface dig interrupt with error
 						return err
 					}
 				}
 			}
 		}
-	case *ast.InterfaceType:
-		log.Println("must implement interface walk")
+	case *ast.IndexListExpr:
+		//new resolver context as it was new generic
+		g.resolver = resolverFrom(ctx).NewResolver()
+
+		if len(fieldTyped.Indices) > 0 {
+			newMapping := make([]string, 0, len(fieldTyped.Indices))
+			for i := range fieldTyped.Indices {
+				newMapping = append(newMapping, fieldTyped.Indices[i].(*ast.Ident).Name)
+			}
+			pf := newPathFinder(g.cfg.Package)
+			ast.Inspect(fieldTyped.X, pf.Find)
+			if pf.Success {
+				pkg, target := pf.Path()
+				g.resolver.Overlap(pkg, target, newMapping)
+			}
+		}
+		err := g.digField(ctx, field, fieldTyped.X)
+
+		g.resolver = g.resolver.Pop()
+
+		return err
 	default:
 		//
 	}
@@ -213,10 +252,9 @@ func (g *generator) digExternalDecl(ctx context.Context, str *ast.SelectorExpr) 
 }
 
 func (g *generator) parsePackage(ctx context.Context, pkg, structure, comment string) error {
-	if !g.internal {
-		ctx = WithInternal(ctx)
-	}
-	ctx = WithIncDeep(ctx)
+
+	ctx = withResolver(ctx, g.resolver)
+	ctx = withIncDeep(ctx)
 	cfg := g.cfg
 
 	if g.cfg.Deep > 0 {
@@ -262,19 +300,19 @@ func (g *generator) wrapFunction(ctx context.Context, ident *ast.Ident, in, out 
 	namer := namerFrom(ctx).NewNamer() //refresh namer for every 1 level function
 	fnBuilder := jen.Add(g.buildFunction(ident.Name, in, out, namer, false))
 	underFn := jen.Id(g.cfg.Variable)
-	if g.internal && !g.interfaceWalk /*&& name == packageName(importCanon(g.cfg.Target))*/ { //!g.interfaceWalk dangerous collision may occur
-		//special case when inner func look like Instance.Signal() and Signal() is actually composition of Instance.Signal.Signal()
-		//or if Instance.Signal() is ambiguous with not exported composition
-		underFn.Dot(packageName(importCanon(g.cfg.Target))).Dot(ident.Name)
-	} else {
-		underFn.Dot(ident.Name)
+
+	//prefix is callContext ie Instance.[callCtx[0]...callCtx[n]].DoSome()
+	for _, prefix := range callPrefixFrom(ctx) {
+		underFn.Dot(prefix)
 	}
+
+	underFn.Dot(ident.Name)
 	underFn.CallFunc(func(group *jen.Group) {
 		names := namer.Values()
 		for _, field := range in.List {
 			for _, fieldIdent := range field.Names {
 				if g.isAnonIdent(fieldIdent) {
-					g.addFnParam(group, field, names[0])
+					g.addFnParam(group, field, names[0]) //use first in stack namer value
 					names = names[1:]
 				} else {
 					g.addFnParam(group, field, fieldIdent.Name)
@@ -333,9 +371,10 @@ func (g *generator) buildFunction(name string, in, out *ast.FieldList, namer Nam
 	}
 	outFieldsCnt := out.NumFields()
 	if out != nil && out.NumFields() > 0 {
-		if outFieldsCnt == 1 && out.List[0].Names == nil { // (named type) as ret value must be in bracket too
+		if outFieldsCnt == 1 && out.List[0].Names == nil {
 			fnBuilder.List(g.buildParams(out, nil, buildSignature)...)
 		} else {
+			// (named type) as ret value must be in bracket too
 			fnBuilder.Params(g.buildParams(out, nil, buildSignature)...)
 		}
 	}
@@ -382,9 +421,9 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 	case *ast.Ident:
 		return root.Add(g.resolver.Resolve(exp, g.cfg.Package, g.defs[exp]))
 		/*		if exp.Obj == nil && ISScalarType(exp.Name) { //it probably scalar // { //check Obj == nil is not enough
-					return root.Id(exp.Name)
+					return parent.Id(exp.Name)
 				} else if true { //local struct decl
-					return root.Qual(g.cfg.Package, exp.Name)
+					return parent.Qual(g.cfg.Package, exp.Name)
 				} else { //for generics
 					log.Println("WARNING: skip *ast.SelectorExpr(recursBuildParam) unsupported format")
 				}*/
@@ -412,8 +451,10 @@ func (g *generator) recursBuildParam(param ast.Expr, root *jen.Statement) *jen.S
 		root.InterfaceFunc(func(group *jen.Group) {
 			for _, m := range exp.Methods.List {
 				if method, ok := m.Type.(*ast.FuncType); ok {
-					//shift (remove) func keyword from func abc()
-					group.Add(shiftStatement(g.buildFunction(m.Names[0].Name, method.Params, method.Results, nil, false)))
+					for i := range m.Names {
+						//shift (remove) func keyword from func abc()
+						group.Add(shiftStatement(g.buildFunction(m.Names[i].Name, method.Params, method.Results, nil, false)))
+					}
 				} else {
 					group.Add(g.recursBuildParam(m.Type, &jen.Statement{}))
 				}
@@ -554,13 +595,6 @@ func interfaceWalkFrom(ctx context.Context) bool {
 	return false
 }
 
-func internalFrom(ctx context.Context) bool {
-	if _internal, ok := ctx.Value("_internal").(bool); ok {
-		return _internal
-	}
-	return false
-}
-
 func deepFrom(ctx context.Context) int {
 	if _deep, ok := ctx.Value("_deep").(int); ok {
 		return _deep
@@ -568,15 +602,22 @@ func deepFrom(ctx context.Context) int {
 	return 0
 }
 
-func WithInterfaceWalk(ctx context.Context) context.Context {
+func callPrefixFrom(ctx context.Context) []string {
+	if _callPrefix, ok := ctx.Value("_callPrefix").([]string); ok {
+		return _callPrefix
+	}
+	return []string{}
+}
+
+func withInterfaceWalk(ctx context.Context) context.Context {
 	return context.WithValue(ctx, "_markInterfaceWalk", true)
 }
 
-func WithInternal(ctx context.Context) context.Context {
-	return context.WithValue(ctx, "_internal", true)
+func withCallPrefix(ctx context.Context, prefix []string) context.Context {
+	return context.WithValue(ctx, "_callPrefix", prefix)
 }
 
-func WithIncDeep(ctx context.Context) context.Context {
+func withIncDeep(ctx context.Context) context.Context {
 	deep := deepFrom(ctx)
 	deep++
 	return context.WithValue(ctx, "_deep", deep)

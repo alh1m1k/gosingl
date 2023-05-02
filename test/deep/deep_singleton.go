@@ -14,31 +14,31 @@ func Ilvl1() error {
 }
 
 func Ilvl2() error {
-	return Instance.Ilvl2()
+	return Instance.il1.Ilvl2()
 }
 
 // <io.ByteScanner> from io
 
 func UnreadByte() error {
-	return Instance.UnreadByte()
+	return Instance.il1.UnreadByte()
 }
 
 func Read(p []byte) (n int, err error) {
-	return Instance.SectionReader.Read(p)
+	return Instance.tl1.tl2.SectionReader.Read(p)
 }
 
 func Seek(offset int64, whence int) (int64, error) {
-	return Instance.SectionReader.Seek(offset, whence)
+	return Instance.tl1.tl2.SectionReader.Seek(offset, whence)
 }
 
 func ReadAt(p []byte, off int64) (n int, err error) {
-	return Instance.SectionReader.ReadAt(p, off)
+	return Instance.tl1.tl2.SectionReader.ReadAt(p, off)
 }
 
 func Size() int64 {
-	return Instance.SectionReader.Size()
+	return Instance.tl1.tl2.SectionReader.Size()
 }
 
 func ReadByte() (byte, error) {
-	return Instance.ReadByte()
+	return Instance.il1.ReadByte()
 }

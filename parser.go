@@ -469,10 +469,10 @@ func generate(ctx context.Context, loader loaderCallback, cfg Config) (context.C
 	generatedTotal := make([]*wrappedFunctionDeclaration, 0)
 	for _, file := range indexes {
 		sf := newStructFinder(cfg.Target, cfg.Package)
-		ast.Inspect(records[cfg.Package].files[file], sf.find)
-		if sf.structure() != nil || len(sf.methods()) > 0 {
-			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
-			if ctx, err = gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
+		ast.Inspect(records[cfg.Package].files[file], sf.Find)
+		if sf.Structure() != nil || len(sf.Methods()) > 0 {
+			gen := newGenerator(sf.Imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
+			if ctx, err = gen.Do(ctx, sf.Structure(), sf.Methods()); err != nil {
 				info(err)
 				continue
 			}
@@ -548,15 +548,15 @@ func generateRoutine(ctx context.Context, loader loaderCallback, output chan<- s
 	targetFound := false
 	for _, file := range indexes {
 		sf := newStructFinder(cfg.Target, cfg.Package)
-		ast.Inspect(records[cfg.Package].files[file], sf.find)
-		if sf.structure() != nil || len(sf.methods()) > 0 {
-			gen := newGenerator(sf.imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
-			if ctx, err = gen.Do(ctx, sf.structure(), sf.methods()); err != nil {
+		ast.Inspect(records[cfg.Package].files[file], sf.Find)
+		if sf.Structure() != nil || len(sf.Methods()) > 0 {
+			gen := newGenerator(sf.Imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
+			if ctx, err = gen.Do(ctx, sf.Structure(), sf.Methods()); err != nil {
 				info(err)
 				continue
 			}
 			generatedTotal = append(generatedTotal, gen.Result()...)
-			if sf.structure() != nil {
+			if sf.Structure() != nil {
 				targetFound = true
 			}
 		}

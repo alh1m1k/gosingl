@@ -11,7 +11,7 @@ import (
 )
 
 type Delayed interface {
-	Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node)
+	Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config)
 }
 
 type VariableDecl struct {
@@ -20,45 +20,56 @@ type VariableDecl struct {
 	Config
 	vType
 	resolved     []string
-	resolveMap   resolveMap
 	rootResolver Resolver
 	processMut   sync.Mutex
+	generics     map[struct {
+		Pkg, Target string
+	}]resolveMap
 }
 
 func (v *VariableDecl) Declare() *jen.Statement {
 	return v.instance
 }
 
-func (v *VariableDecl) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node) {
+func (v *VariableDecl) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config) {
 	v.processMut.Lock()
 	defer v.processMut.Unlock()
 
-	if v.vType == Auto {
+	if v.vType == Auto && cfg.Target == v.Target {
 		v.vType = v.updateVType(target, targetMethods)
 	}
 
-	if target != nil && target.Name.Name == v.Target {
-		v.target = target
+	if target != nil {
+
+		if cfg.Target == v.Target {
+			v.target = target
+		}
+
 		if len(v.resolved) > 0 {
-			if v.target.TypeParams == nil || v.target.TypeParams.List == nil {
-				critical("target not a generic type")
+			if target.TypeParams == nil || target.TypeParams.List == nil {
+				if target.Name.Name == v.Target {
+					critical("target not a generic type")
+				}
 			} else {
-				v.resolveMap = make(map[string]string)
+				rslMap := resolveMap{resolve: map[string]string{}, index: []string{}}
 				total := 0
 				maxLen := len(v.resolved)
 
-				for i := range v.target.TypeParams.List {
-					for _, ident := range v.target.TypeParams.List[i].Names {
+				for i := range target.TypeParams.List {
+					for _, ident := range target.TypeParams.List[i].Names {
 						if total >= maxLen {
 							total++
 							continue
 						}
-						v.resolveMap[ident.Name] = v.resolved[total]
+						rslMap.index = append(rslMap.index, ident.Name)
+						rslMap.resolve[ident.Name] = v.resolved[total] //if v.Target != cfg.Target this line doesn't make sense.
+						//it will be recalculated later in proper context
 						total++
 					}
 				}
+				v.generics[struct{ Pkg, Target string }{Pkg: cfg.Package, Target: cfg.Target}] = rslMap
 				if total != len(v.resolved) {
-					critical("target generics count mismatch")
+					critical(fmt.Sprintf("%s target generics count mismatch", target.Name))
 				}
 			}
 		}
@@ -69,7 +80,7 @@ func (v *VariableDecl) CompleteResolve() {
 	v.update()
 	wait := &sync.WaitGroup{}
 	wait.Add(1)
-	go v.rootResolver.CompleteResolve(v.resolveMap, wait) //todo only if need
+	go v.rootResolver.CompleteResolve(v.generics[struct{ Pkg, Target string }{Pkg: v.Package, Target: v.Target}], v.generics, wait) //todo only if need
 	wait.Wait()
 }
 
@@ -144,6 +155,7 @@ func NewVariableDecl(cfg Config, vType vType, resolved []string) *VariableDecl {
 		Config:       cfg,
 		vType:        vType,
 		resolved:     resolved,
+		generics:     map[struct{ Pkg, Target string }]resolveMap{},
 		rootResolver: newResolver(),
 	}
 }

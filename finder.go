@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	UnknownTargetError = errors.New("target structure unknown")
+	UnknownTargetError = errors.New("target Structure unknown")
 )
 
 type structFinder struct {
@@ -23,7 +23,7 @@ func newStructFinder(name string, filename string) *structFinder {
 	return &structFinder{name: strings.TrimSpace(name), filename: filename}
 }
 
-func (s *structFinder) find(n ast.Node) bool {
+func (s *structFinder) Find(n ast.Node) bool {
 
 	switch lookedFor := n.(type) {
 	case *ast.ImportSpec:
@@ -74,14 +74,49 @@ func (s *structFinder) recursiveResolveRcv(n ast.Node, t ast.Expr) {
 	}
 }
 
-func (s *structFinder) structure() *ast.TypeSpec {
+func (s *structFinder) Structure() *ast.TypeSpec {
 	return s.s
 }
 
-func (s *structFinder) methods() []ast.Node {
+func (s *structFinder) Methods() []ast.Node {
 	return s.m
 }
 
-func (s *structFinder) imports() []*ast.ImportSpec {
+func (s *structFinder) Imports() []*ast.ImportSpec {
 	return s.i
+}
+
+type pathFinder struct {
+	pkg, target string
+	Success     bool
+	ast.Node
+}
+
+func newPathFinder(currentPkg string) *pathFinder {
+	return &pathFinder{pkg: currentPkg}
+}
+
+func (s *pathFinder) Find(n ast.Node) bool {
+	switch lookedFor := n.(type) {
+	case *ast.SelectorExpr:
+		s.pkg = lookedFor.X.(*ast.Ident).Name
+		s.target = lookedFor.Sel.Name
+		s.Node = lookedFor
+		s.Success = true
+		return false
+	case *ast.Ident:
+		s.target = lookedFor.Name
+		s.Node = lookedFor
+		s.Success = true
+		return false
+	}
+	return true
+}
+
+func (s *pathFinder) Structure() ast.Node {
+	return s.Node
+}
+
+func (s *pathFinder) Path() (pkg, target string) {
+	return s.pkg, s.target
 }
