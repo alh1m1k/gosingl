@@ -176,7 +176,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	loader := linearLoaderBuilder(buffer, cfg)
 
 	varDecl := NewVariableDeclFromConfig(cfg)
-	cfg.Variable = clearVarFromDeclaration(cfg.Variable)
+	cfg.Variable = clearVarDeclaration(cfg.Variable)
 
 	ctx = SetupCtx(ctx,
 		nil,
@@ -188,7 +188,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	)
 
 	if len(cfg.Comment) > 0 {
-		buffer.PackageComment(strings.TrimSpace(cfg.Comment))
+		buffer.PackageComment(cfg.Comment)
 		buffer.Line()
 	}
 
@@ -259,6 +259,8 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 		}
 	}
 
+	close(resultChanel)
+
 	//restore original order
 	for _, task := range originalOrder {
 		totalGenerated = append(totalGenerated, generatedParts[task.Config]...)
@@ -309,28 +311,11 @@ func linearLoaderBuilder(buffer *jen.File, cfg Config) loaderCallback {
 	return linearLoader
 }
 
-func recursiveLoaderBuilder(buffer *jen.File, cfg Config) loaderCallback {
-	//todo deep counter respect
-	var recursiveLoader loaderCallback
-	recursiveLoader = func(ctx context.Context, cfg Config) error {
-		_, _, err := generate(ctx, recursiveLoader, cfg) //break context chain
-		return err
-	}
-
-	return recursiveLoader
-}
-
-func declVariable(buffer *jen.File, cfg Config) {
-
-}
-
 func glue(output *jen.File, content []*wrappedFunctionDeclaration, cfg Config) {
 	var (
 		pkg, target string
 	)
-	/*	sort.SliceStable(content, func(i, j int) bool {
-		return content[i].Package+"_"+content[i].Target < content[j].Package+"_"+content[j].Target
-	})*/
+
 	for _, fn := range content {
 		if pkg != fn.Package && target != fn.Target {
 			output.Line().Comment(fmt.Sprintf("%s from %s", strings.TrimSpace(fn.Comment), fn.Package)).Line()
@@ -420,67 +405,6 @@ func collectFiles(pkg string, blacklist []string) (path string, files map[string
 	}
 
 	return path, files, fileSet, nil
-}
-
-func generate(ctx context.Context, loader loaderCallback, cfg Config) (context.Context, []*wrappedFunctionDeclaration, error) {
-	var (
-		p   *loaderRecord
-		ok  bool
-		err error
-	)
-
-	mut.Lock()
-	if p, ok = records[cfg.Package]; !ok {
-		p = &loaderRecord{
-			files:   nil,
-			targets: []string{},
-			path:    "",
-			inited:  false,
-			Mutex:   sync.Mutex{},
-		}
-		records[cfg.Package] = p
-	}
-	mut.Unlock()
-
-	p.Lock()
-	if !p.inited {
-		records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet, err = collectFiles(cfg.Package, blackListFrom(ctx))
-		if err != nil {
-			return ctx, []*wrappedFunctionDeclaration{}, err
-		}
-		//initPackage is @deprecated and will be removed in future
-		records[cfg.Package].Package, records[cfg.Package].packageDefs, err = initPackage(records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet)
-		p.inited = true
-	}
-	for _, target := range records[cfg.Package].targets {
-		if target == cfg.Target {
-			p.Unlock()
-			return ctx, []*wrappedFunctionDeclaration{}, ProcessedError
-		}
-	}
-	records[cfg.Package].targets = append(records[cfg.Package].targets, cfg.Target)
-	p.Unlock()
-
-	indexes := make([]string, 0, len(records[cfg.Package].files))
-	for path := range records[cfg.Package].files {
-		indexes = append(indexes, path)
-	}
-	sort.Strings(indexes)
-	generatedTotal := make([]*wrappedFunctionDeclaration, 0)
-	for _, file := range indexes {
-		sf := newStructFinder(cfg.Target, cfg.Package)
-		ast.Inspect(records[cfg.Package].files[file], sf.Find)
-		if sf.Structure() != nil || len(sf.Methods()) > 0 {
-			gen := newGenerator(sf.Imports(), cfg, loader, records[cfg.Package].packageDefs, records[cfg.Package].path)
-			if ctx, err = gen.Do(ctx, sf.Structure(), sf.Methods()); err != nil {
-				info(err)
-				continue
-			}
-			generatedTotal = append(generatedTotal, gen.Result()...)
-		}
-	}
-
-	return ctx, generatedTotal, nil
 }
 
 func generateRoutine(ctx context.Context, loader loaderCallback, output chan<- struct {
@@ -618,7 +542,7 @@ func initPackage(path string, files map[string]*ast.File, fs *token.FileSet) (*t
 }
 
 // todo refactor
-func clearVarFromDeclaration(string2 string) string {
+func clearVarDeclaration(string2 string) string {
 	string2 = strings.Replace(strings.Replace(string2, "*", "", 1), "&", "", 1)
 	start, end := strings.Index(string2, "["), strings.Index(string2, "]")
 	if start < 0 || end < 0 {

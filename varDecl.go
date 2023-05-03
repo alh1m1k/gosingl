@@ -182,14 +182,14 @@ func NewVariableDeclFromConfig(cfg Config) *VariableDecl {
 	//log.Println(cfg.Variable)
 	generics := resolveGenerics2(cfg)
 	if strings.Index(cfg.Variable, "*") == 0 {
-		cfg.Variable = clearVarFromDeclaration(cfg.Variable)
+		cfg.Variable = clearVarDeclaration(cfg.Variable)
 		return NewVariableDecl(cfg, Real, generics)
 	} else if strings.Index(cfg.Variable, "&") == 0 {
-		cfg.Variable = clearVarFromDeclaration(cfg.Variable)
+		cfg.Variable = clearVarDeclaration(cfg.Variable)
 		return NewVariableDecl(cfg, Ref, generics)
 	} else {
 		//auto
-		cfg.Variable = clearVarFromDeclaration(cfg.Variable)
+		cfg.Variable = clearVarDeclaration(cfg.Variable)
 		return NewVariableDecl(cfg, Auto, generics)
 	}
 }
