@@ -61,7 +61,7 @@ type pendingParserReq struct {
 type packageDefs map[*ast.Ident]types.Object
 
 var (
-	pending    []pendingParserReq
+	pending    []*pendingParserReq
 	pendingMux               = sync.Mutex{}
 	records    loaderRecords = make(loaderRecords)
 )
@@ -131,7 +131,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	records = make(loaderRecords)
 	mut.Unlock()
 	pendingMux.Lock()
-	pending = make([]pendingParserReq, 0)
+	pending = make([]*pendingParserReq, 0)
 	pendingMux.Unlock()
 
 	cfg.Package = strings.TrimSpace(cfg.Package)
@@ -175,7 +175,7 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 	//loader := recursiveLoaderBuilder(buffer, cfg)
 	loader := linearLoaderBuilder(buffer, cfg)
 
-	varDecl := NewVariableDeclFromConfig(cfg)
+	varDecl := newVariableDeclFromConfig(cfg)
 	cfg.Variable = clearVarDeclaration(cfg.Variable)
 
 	ctx = SetupCtx(ctx,
@@ -220,12 +220,12 @@ func ParsePackage(ctx context.Context, cfg Config) error {
 
 	untilEnd := cfg.Deep == 0
 	undergoingTask := 0
-	originalOrder := make([]pendingParserReq, 0)
+	originalOrder := make([]*pendingParserReq, 0)
 	generatedParts := make(map[Config][]*wrappedFunctionDeclaration, 0)
 	for len(pending) > 0 /*&& (untilEnd || turnsLeft > 0)*/ {
 
 		pendingMux.Lock()
-		newTasks := make([]pendingParserReq, len(pending))
+		newTasks := make([]*pendingParserReq, len(pending))
 		copy(newTasks, pending)
 		pending = pending[0:0]
 		pendingMux.Unlock()
@@ -300,7 +300,7 @@ func linearLoaderBuilder(buffer *jen.File, cfg Config) loaderCallback {
 	var linearLoader loaderCallback
 	linearLoader = func(ctx context.Context, cfg Config) error {
 		pendingMux.Lock()
-		pending = append(pending, pendingParserReq{
+		pending = append(pending, &pendingParserReq{
 			Config:  cfg,
 			Context: ctx,
 		})

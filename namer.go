@@ -13,13 +13,13 @@ type Namer interface {
 	NewNamer() Namer
 }
 
-type ParameterNamer struct {
+type parameterNamer struct {
 	sync.Mutex
 	m map[string]int64
 	p []string
 }
 
-func (receiver *ParameterNamer) New(typeOf string) string {
+func (receiver *parameterNamer) New(typeOf string) string {
 	receiver.Mutex.Lock()
 	defer receiver.Mutex.Unlock()
 	var v string
@@ -32,26 +32,26 @@ func (receiver *ParameterNamer) New(typeOf string) string {
 	return v
 }
 
-func (receiver *ParameterNamer) Reset() {
+func (receiver *parameterNamer) Reset() {
 	receiver.Mutex.Lock()
 	defer receiver.Mutex.Unlock()
 	receiver.m = make(map[string]int64)
 	receiver.p = receiver.p[0:0]
 }
 
-func (receiver *ParameterNamer) Len() int {
+func (receiver *parameterNamer) Len() int {
 	return len(receiver.p)
 }
 
-func (receiver *ParameterNamer) Values() []string {
+func (receiver *parameterNamer) Values() []string {
 	return receiver.p
 }
 
-func (receiver *ParameterNamer) NewNamer() Namer {
+func (receiver *parameterNamer) NewNamer() Namer {
 	return newParameterNamer()
 }
 
-func (receiver *ParameterNamer) newNameOfType(typeOf string) string {
+func (receiver *parameterNamer) newNameOfType(typeOf string) string {
 	var (
 		indx int64
 		ok   bool
@@ -63,12 +63,12 @@ func (receiver *ParameterNamer) newNameOfType(typeOf string) string {
 	return fmt.Sprintf("%s%d", typeOf, indx)
 }
 
-func (receiver *ParameterNamer) newName() string {
+func (receiver *parameterNamer) newName() string {
 	return receiver.newNameOfType("p")
 }
 
-func newParameterNamer() *ParameterNamer {
-	n := &ParameterNamer{}
+func newParameterNamer() *parameterNamer {
+	n := &parameterNamer{}
 	n.Reset()
 	return n
 }

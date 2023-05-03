@@ -14,7 +14,7 @@ type Delayed interface {
 	Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config)
 }
 
-type VariableDecl struct {
+type variableDecl struct {
 	instance *jen.Statement
 	target   *ast.TypeSpec
 	Config
@@ -27,11 +27,11 @@ type VariableDecl struct {
 	}]resolveMap
 }
 
-func (v *VariableDecl) Declare() *jen.Statement {
+func (v *variableDecl) Declare() *jen.Statement {
 	return v.instance
 }
 
-func (v *VariableDecl) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config) {
+func (v *variableDecl) Do(ctx context.Context, target *ast.TypeSpec, targetMethods []ast.Node, cfg Config) {
 	v.processMut.Lock()
 	defer v.processMut.Unlock()
 
@@ -65,7 +65,7 @@ func (v *VariableDecl) Do(ctx context.Context, target *ast.TypeSpec, targetMetho
 	}
 }
 
-func (v *VariableDecl) CompleteResolve() {
+func (v *variableDecl) CompleteResolve() {
 	v.update()
 	wait := &sync.WaitGroup{}
 	wait.Add(1)
@@ -82,7 +82,7 @@ func (v *VariableDecl) CompleteResolve() {
 	wait.Wait()
 }
 
-func (v *VariableDecl) updateVType(target *ast.TypeSpec, targetMethods []ast.Node) vType {
+func (v *variableDecl) updateVType(target *ast.TypeSpec, targetMethods []ast.Node) vType {
 	//auto
 	if target != nil {
 		switch target.Type.(type) {
@@ -126,7 +126,7 @@ func (v *VariableDecl) updateVType(target *ast.TypeSpec, targetMethods []ast.Nod
 	return Auto
 }
 
-func (v *VariableDecl) update() {
+func (v *variableDecl) update() {
 	resetStatement(v.instance)
 	switch v.vType {
 	case Real:
@@ -167,8 +167,8 @@ func (v *VariableDecl) update() {
 	}
 }
 
-func NewVariableDecl(cfg Config, vType vType, resolved []string) *VariableDecl {
-	return &VariableDecl{
+func newVariableDecl(cfg Config, vType vType, resolved []string) *variableDecl {
+	return &variableDecl{
 		instance:     &jen.Statement{},
 		Config:       cfg,
 		vType:        vType,
@@ -178,19 +178,19 @@ func NewVariableDecl(cfg Config, vType vType, resolved []string) *VariableDecl {
 	}
 }
 
-func NewVariableDeclFromConfig(cfg Config) *VariableDecl {
+func newVariableDeclFromConfig(cfg Config) *variableDecl {
 	//log.Println(cfg.Variable)
 	generics := resolveGenerics2(cfg)
 	if strings.Index(cfg.Variable, "*") == 0 {
 		cfg.Variable = clearVarDeclaration(cfg.Variable)
-		return NewVariableDecl(cfg, Real, generics)
+		return newVariableDecl(cfg, Real, generics)
 	} else if strings.Index(cfg.Variable, "&") == 0 {
 		cfg.Variable = clearVarDeclaration(cfg.Variable)
-		return NewVariableDecl(cfg, Ref, generics)
+		return newVariableDecl(cfg, Ref, generics)
 	} else {
 		//auto
 		cfg.Variable = clearVarDeclaration(cfg.Variable)
-		return NewVariableDecl(cfg, Auto, generics)
+		return newVariableDecl(cfg, Auto, generics)
 	}
 }
 
