@@ -33,8 +33,6 @@ type generics[T comparable, R string | bool | float64, Z structure] struct {
 	//wrongGenerics[float32, R]
 }
 
-var gen generics[int, string, *os.File]
-
 func (receiver generics[T, R, Z]) Typed(a T, b R) {
 
 }

@@ -391,7 +391,7 @@ func (g *generator) buildParams(params *ast.FieldList, namer Namer, buildSignatu
 				fieldName := fieldIdent.Name
 				if fieldName == "" || fieldName == "_" {
 					if namer != nil {
-						fieldName = namer.New("")
+						fieldName = namer.NewName("")
 					}
 				}
 				if param == nil {
@@ -404,7 +404,7 @@ func (g *generator) buildParams(params *ast.FieldList, namer Namer, buildSignatu
 		if param == nil { //anon param (probably return value or _)
 			param = &jen.Statement{}
 			if namer != nil {
-				param.Id(namer.New(""))
+				param.Id(namer.NewName(""))
 			}
 		}
 		param = g.recursBuildParam(field.Type, param)

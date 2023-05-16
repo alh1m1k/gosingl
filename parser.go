@@ -348,6 +348,7 @@ func setupOutput(ctx context.Context, cfg Config) (writer io.Writer, done, fail 
 					panic(err)
 				}
 				//resetFilePath = p.Dir + "/" + packageName(importCanon(cfg.Package)) + cfg.Suffix
+				//todo encoding of filepath
 				resetFilePath = p.Dir + "/" + strings.ToLower(cfg.Target[0:1]) + cfg.Target[1:] + cfg.Suffix
 			} else {
 				resetFilePath = cfg.Path
@@ -444,7 +445,6 @@ func generateRoutine(ctx context.Context, loader loaderCallback, output chan<- s
 			}{Context: ctx, Decl: []*wrappedFunctionDeclaration{}, Config: cfg, error: err}
 			return
 		}
-		//initPackage is @deprecated and will be removed in future
 		records[cfg.Package].Package, records[cfg.Package].packageDefs, err = initPackage(records[cfg.Package].path, records[cfg.Package].files, records[cfg.Package].fileSet)
 		p.inited = true
 	}

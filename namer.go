@@ -6,7 +6,7 @@ import (
 )
 
 type Namer interface {
-	New(typeOf string) string
+	NewName(typeOf string) string
 	Reset()
 	Len() int
 	Values() []string
@@ -19,7 +19,7 @@ type parameterNamer struct {
 	p []string
 }
 
-func (receiver *parameterNamer) New(typeOf string) string {
+func (receiver *parameterNamer) NewName(typeOf string) string {
 	receiver.Mutex.Lock()
 	defer receiver.Mutex.Unlock()
 	var v string
