@@ -210,7 +210,7 @@ func (g *generator) digField(ctx context.Context, field *ast.Field, inner ast.Ex
 		}
 	case *ast.IndexListExpr:
 		//new resolver context as it was new generic
-		g.resolver = resolverFrom(ctx).NewResolver()
+		g.resolver = g.resolver.NewResolver()
 
 		if len(fieldTyped.Indices) > 0 {
 			newMapping := make([]string, 0, len(fieldTyped.Indices))
