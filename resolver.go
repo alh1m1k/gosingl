@@ -87,10 +87,11 @@ func (r *genericResolver) CompleteResolve(rslMap resolveMap, allMaps mapResolveM
 			for i := range original.index {
 				if i < len(r.overlap) {
 					merge.resolve[original.index[i]] = r.overlap[i]
+					merge.index = append(merge.index, r.overlap[i])
 				} else {
 					merge.resolve[original.index[i]] = original.index[i]
+					merge.index = append(merge.index, original.index[i])
 				}
-				merge.index = append(merge.index, r.overlap[i])
 			}
 			for i, org := range merge.resolve {
 				if override, ok := rslMap.resolve[org]; ok {
